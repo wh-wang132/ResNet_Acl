@@ -6,4 +6,5 @@ Data/
 input/
 output/
 ResNet/
-*.tar.zst
+*.tar
+*.tar.*
