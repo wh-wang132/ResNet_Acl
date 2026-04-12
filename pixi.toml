@@ -17,3 +17,12 @@ extra-index-urls = ["https://mirrors.ustc.edu.cn/pypi/web/simple"]
 python = "3.12.*"
 pip = ">=26.0.1,<27"
 ascend-cann-toolkit = "==8.5.0"
+ascend-cann-310b-ops = "==8.5.0"
+
+[pypi-dependencies]
+matplotlib = ">=3.10.8, <4"
+sympy = ">=1.14.0, <2"
+scipy = ">=1.17.1, <2"
+decorator = ">=5.2.1, <6"
+attrs = ">=26.1.0, <27"
+psutil = ">=7.2.2, <8"
