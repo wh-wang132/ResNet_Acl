@@ -1,0 +1,9 @@
+default-channels = ["https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge"]
+run-post-link-scripts = "insecure"
+
+[mirrors]
+"https://conda.anaconda.org/conda-forge" = ["https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge"]
+
+[pypi-config]
+index-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+extra-index-urls = ["https://mirrors.ustc.edu.cn/pypi/web/simple"]

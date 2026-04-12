@@ -1,0 +1,19 @@
+[workspace]
+channels = [
+    "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge",
+    "https://repo.huaweicloud.com/ascend/repos/conda"
+]
+name = "ResNet_Acl"
+platforms = ["linux-aarch64"]
+version = "0.1.0"
+
+[pypi-options]
+index-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+extra-index-urls = ["https://mirrors.ustc.edu.cn/pypi/web/simple"]
+
+[tasks]
+
+[dependencies]
+python = "3.12.*"
+pip = ">=26.0.1,<27"
+ascend-cann-toolkit = "==8.5.0"
