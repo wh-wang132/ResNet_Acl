@@ -4,7 +4,7 @@ channels = [
     "https://repo.huaweicloud.com/ascend/repos/conda"
 ]
 name = "ResNet_Acl"
-platforms = ["linux-aarch64"]
+platforms = ["linux-64", "linux-aarch64"]
 version = "0.1.0"
 
 [pypi-options]
