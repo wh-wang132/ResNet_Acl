@@ -7,6 +7,9 @@ from typing import Iterable
 
 import matplotlib
 matplotlib.use("Agg")
+matplotlib.rcParams["font.family"] = ["Times New Roman"]
+matplotlib.rcParams["font.sans-serif"] = ["Times New Roman"]
+matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
@@ -87,12 +90,12 @@ def plot_confusion_matrix(
     ensure_directory(resolved.parent)
     plt.figure(figsize=(20, 16))
     plt.imshow(matrix, cmap=cm.get_cmap("Blues"))
-    plt.xticks(range(len(class_names)), class_names, rotation=45, fontsize=12)
-    plt.yticks(range(len(class_names)), class_names, fontsize=12)
+    plt.xticks(range(len(class_names)), class_names, rotation=45, fontsize=28)
+    plt.yticks(range(len(class_names)), class_names, fontsize=28)
     cbar = plt.colorbar()
-    cbar.ax.tick_params(labelsize=10)
-    plt.xlabel("True Labels")
-    plt.ylabel("Predicted Labels")
+    cbar.ax.tick_params(labelsize=24)
+    plt.xlabel("True Labels", fontsize=32)
+    plt.ylabel("Predicted Labels", fontsize=32)
     threshold = matrix.max() / 2 if matrix.size else 0
     for x in range(matrix.shape[1]):
         for y in range(matrix.shape[0]):
@@ -104,9 +107,9 @@ def plot_confusion_matrix(
                 va="center",
                 ha="center",
                 color="white" if value > threshold else "black",
-                fontsize=10,
+                fontsize=24,
             )
     plt.tight_layout()
-    plt.savefig(resolved, dpi=150, bbox_inches="tight")
+    plt.savefig(resolved, dpi=100, bbox_inches="tight")
     plt.close()
     return resolved
