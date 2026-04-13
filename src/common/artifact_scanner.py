@@ -138,15 +138,8 @@ def scan_branch_artifacts(branch: str, scan_root: str | Path | None = None) -> l
     return [_validate_artifact(model_path, spec) for model_path in model_paths]
 
 
-def resolve_artifacts(
-    branch: str,
-    artifact_path: str | Path | None = None,
-    scan_root: str | Path | None = None,
-) -> list[ArtifactRecord]:
+def resolve_artifact(branch: str, artifact_path: str | Path) -> ArtifactRecord:
     spec = get_branch_spec(branch)
-    if artifact_path is None:
-        return scan_branch_artifacts(branch, scan_root=scan_root)
-
     candidate = Path(artifact_path)
     model_path = candidate / spec.model_filename if candidate.is_dir() else candidate
     if model_path.name != spec.model_filename:
@@ -155,4 +148,15 @@ def resolve_artifacts(
         )
     if not model_path.exists():
         raise ArtifactScanError(f"找不到模型文件: {model_path}")
-    return [_validate_artifact(model_path, spec)]
+    return _validate_artifact(model_path, spec)
+
+
+def resolve_artifacts(
+    branch: str,
+    artifact_path: str | Path | None = None,
+    scan_root: str | Path | None = None,
+) -> list[ArtifactRecord]:
+    spec = get_branch_spec(branch)
+    if artifact_path is None:
+        return scan_branch_artifacts(branch, scan_root=scan_root)
+    return [resolve_artifact(branch, artifact_path)]

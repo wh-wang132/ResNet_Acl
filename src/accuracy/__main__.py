@@ -4,9 +4,9 @@ from pathlib import Path
 
 import numpy as np
 
-from src.common.acl_runner import ACLModelRunner, ACLRuntimeError
+from src.common.acl_runner import ACLModelRunner
 from src.common.args import parse_accuracy_args
-from src.common.artifact_scanner import ArtifactRecord, resolve_artifacts
+from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
 from src.common.data import load_npy_sample
 from src.common.manifest import build_test_records, load_manifest
 from src.common.metrics import (
@@ -31,7 +31,7 @@ class AccuracyRunError(RuntimeError):
 
 def main() -> None:
     args = parse_accuracy_args()
-    artifacts = resolve_artifacts(args.branch, artifact_path=args.artifact_path, scan_root=args.scan_root)
+    artifact = resolve_artifact(args.branch, args.artifact_path)
     manifest = load_manifest(args.split_manifest)
     class_names = [str(name) for name in manifest["class_names"]]
     records = build_test_records(manifest, args.data_dir)
@@ -41,39 +41,17 @@ def main() -> None:
         raise AccuracyRunError("test 集为空，无法执行精度评测")
 
     run_dir = create_run_directory(args.output_root, args.branch)
-    summary_rows: list[dict[str, object]] = []
-    failures: list[dict[str, object]] = []
-
-    for artifact in artifacts:
-        try:
-            summary_rows.append(run_accuracy_for_artifact(artifact, records, class_names, run_dir, args.device_id, args))
-        except Exception as exc:
-            if args.fail_fast:
-                raise
-            failures.append(
-                {
-                    "model_name": artifact.model_name,
-                    "experiment_name": artifact.experiment_name,
-                    "artifact_path": to_repo_relative(artifact.model_path),
-                    "error": str(exc),
-                }
-            )
-
+    summary = run_accuracy_for_artifact(artifact, records, class_names, run_dir, args.device_id, args)
     write_json(
         run_dir / "summary.json",
         {
             "branch": args.branch,
             "run_dir": to_repo_relative(run_dir),
-            "artifacts_total": len(artifacts),
-            "artifacts_succeeded": len(summary_rows),
-            "artifacts_failed": len(failures),
-            "results": summary_rows,
-            "failures": failures,
+            "result": summary,
         },
     )
-    write_csv(run_dir / "summary.csv", summary_rows)
-    if failures:
-        write_csv(run_dir / "failures.csv", failures)
+    print(to_repo_relative(run_dir / "summary.json"))
+    print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
 
 
 def run_accuracy_for_artifact(
@@ -117,7 +95,9 @@ def run_accuracy_for_artifact(
         "output_name": artifact.output_specs[0].name,
         "output_shape": list(artifact.output_specs[0].shape),
         "output_dtype": str(artifact.output_specs[0].dtype),
-        "confusion_matrix_csv": to_repo_relative(write_confusion_matrix_csv(artifact_dir / "confusion_matrix.csv", confusion.matrix, class_names)),
+        "confusion_matrix_csv": to_repo_relative(
+            write_confusion_matrix_csv(artifact_dir / "confusion_matrix.csv", confusion.matrix, class_names)
+        ),
     }
     if args.save_confusion_matrix:
         summary["confusion_matrix_png"] = to_repo_relative(

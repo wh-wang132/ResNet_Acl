@@ -15,14 +15,12 @@ DEFAULT_EFFICIENCY_OUTPUT = REPO_ROOT / "output" / "infer" / "efficiency"
 def _base_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--branch", required=True, choices=sorted(BRANCH_SPECS))
-    parser.add_argument("--artifact_path", type=Path, default=None, help="单个 OM 文件路径")
-    parser.add_argument("--scan_root", type=Path, default=None, help="覆盖默认扫描根目录")
+    parser.add_argument("--artifact_path", type=Path, required=True, help="单个 artifact 目录或 OM 文件路径")
     parser.add_argument("--data_dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--split_manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--device_id", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--fail_fast", action="store_true")
     return parser
 
 
@@ -42,12 +40,6 @@ def _finalize_common_args(args: argparse.Namespace) -> argparse.Namespace:
             args.artifact_path.resolve()
             if args.artifact_path.is_absolute()
             else (REPO_ROOT / args.artifact_path).resolve()
-        )
-    if args.scan_root is not None:
-        args.scan_root = (
-            args.scan_root.resolve()
-            if args.scan_root.is_absolute()
-            else (REPO_ROOT / args.scan_root).resolve()
         )
     args.output_root = (
         args.output_root.resolve()

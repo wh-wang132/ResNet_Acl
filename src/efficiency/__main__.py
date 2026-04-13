@@ -6,11 +6,11 @@ from pathlib import Path
 
 from src.common.acl_runner import ACLModelRunner
 from src.common.args import parse_efficiency_args
-from src.common.artifact_scanner import ArtifactRecord, resolve_artifacts
+from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
 from src.common.data import load_npy_sample
 from src.common.manifest import build_all_records, load_manifest, scan_data_records
 from src.common.metrics import LatencyMeter, argmax_predictions
-from src.common.report import create_run_directory, to_repo_relative, write_csv, write_json
+from src.common.report import create_run_directory, to_repo_relative, write_json
 
 
 class EfficiencyRunError(RuntimeError):
@@ -19,7 +19,7 @@ class EfficiencyRunError(RuntimeError):
 
 def main() -> None:
     args = parse_efficiency_args()
-    artifacts = resolve_artifacts(args.branch, artifact_path=args.artifact_path, scan_root=args.scan_root)
+    artifact = resolve_artifact(args.branch, args.artifact_path)
     manifest = load_manifest(args.split_manifest)
     records = select_records(args, manifest)
     if args.limit is not None:
@@ -28,24 +28,7 @@ def main() -> None:
         raise EfficiencyRunError("评测数据为空，无法执行效率评测")
 
     run_dir = create_run_directory(args.output_root, args.branch)
-    summary_rows: list[dict[str, object]] = []
-    failures: list[dict[str, object]] = []
-
-    for artifact in artifacts:
-        try:
-            summary_rows.append(run_efficiency_for_artifact(artifact, records, run_dir, args))
-        except Exception as exc:
-            if args.fail_fast:
-                raise
-            failures.append(
-                {
-                    "model_name": artifact.model_name,
-                    "experiment_name": artifact.experiment_name,
-                    "artifact_path": to_repo_relative(artifact.model_path),
-                    "error": str(exc),
-                }
-            )
-
+    summary = run_efficiency_for_artifact(artifact, records, run_dir, args)
     write_json(
         run_dir / "summary.json",
         {
@@ -53,16 +36,11 @@ def main() -> None:
             "dataset_scope": args.dataset_scope,
             "time_mode": args.time_mode,
             "run_dir": to_repo_relative(run_dir),
-            "artifacts_total": len(artifacts),
-            "artifacts_succeeded": len(summary_rows),
-            "artifacts_failed": len(failures),
-            "results": summary_rows,
-            "failures": failures,
+            "result": summary,
         },
     )
-    write_csv(run_dir / "summary.csv", summary_rows)
-    if failures:
-        write_csv(run_dir / "failures.csv", failures)
+    print(to_repo_relative(run_dir / "summary.json"))
+    print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
 
 
 def select_records(args, manifest: dict[str, object]):
