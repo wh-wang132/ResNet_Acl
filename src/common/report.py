@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -23,8 +22,7 @@ def ensure_directory(path: str | Path) -> Path:
 
 def create_run_directory(output_root: str | Path, branch: str) -> Path:
     root = resolve_repo_path(output_root)
-    timestamp = datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    return ensure_directory(root / branch / timestamp)
+    return ensure_directory(root / branch)
 
 
 def resolve_repo_path(path_like: str | Path) -> Path:

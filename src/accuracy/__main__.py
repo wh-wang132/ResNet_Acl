@@ -41,16 +41,7 @@ def main() -> None:
         raise AccuracyRunError("test 集为空，无法执行精度评测")
 
     run_dir = create_run_directory(args.output_root, args.branch)
-    summary = run_accuracy_for_artifact(artifact, records, class_names, run_dir, args.device_id, args)
-    write_json(
-        run_dir / "summary.json",
-        {
-            "branch": args.branch,
-            "run_dir": to_repo_relative(run_dir),
-            "result": summary,
-        },
-    )
-    print(to_repo_relative(run_dir / "summary.json"))
+    run_accuracy_for_artifact(artifact, records, class_names, run_dir, args.device_id, args)
     print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
 
 

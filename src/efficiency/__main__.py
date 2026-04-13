@@ -28,18 +28,7 @@ def main() -> None:
         raise EfficiencyRunError("评测数据为空，无法执行效率评测")
 
     run_dir = create_run_directory(args.output_root, args.branch)
-    summary = run_efficiency_for_artifact(artifact, records, run_dir, args)
-    write_json(
-        run_dir / "summary.json",
-        {
-            "branch": args.branch,
-            "dataset_scope": args.dataset_scope,
-            "time_mode": args.time_mode,
-            "run_dir": to_repo_relative(run_dir),
-            "result": summary,
-        },
-    )
-    print(to_repo_relative(run_dir / "summary.json"))
+    run_efficiency_for_artifact(artifact, records, run_dir, args)
     print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
 
 

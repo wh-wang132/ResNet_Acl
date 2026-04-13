@@ -8,8 +8,8 @@ from .branch_specs import REPO_ROOT, BRANCH_SPECS
 
 DEFAULT_MANIFEST = REPO_ROOT / "input" / "splits" / "dataset_split__train0.60_val0.20_test0.20_seed42.json"
 DEFAULT_DATA_DIR = REPO_ROOT / "Data"
-DEFAULT_ACCURACY_OUTPUT = REPO_ROOT / "output" / "infer" / "accuracy"
-DEFAULT_EFFICIENCY_OUTPUT = REPO_ROOT / "output" / "infer" / "efficiency"
+DEFAULT_ACCURACY_OUTPUT = REPO_ROOT / "output" / "accuracy"
+DEFAULT_EFFICIENCY_OUTPUT = REPO_ROOT / "output" / "efficiency"
 
 
 def _base_parser(description: str) -> argparse.ArgumentParser:
