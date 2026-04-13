@@ -6,6 +6,7 @@ Data/
 input/
 output/
 ResNet/
+__py
 *.tar
 *.tar.*
 .codex
