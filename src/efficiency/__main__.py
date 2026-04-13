@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import itertools
+import time
+from pathlib import Path
+
+from src.common.acl_runner import ACLModelRunner
+from src.common.args import parse_efficiency_args
+from src.common.artifact_scanner import ArtifactRecord, resolve_artifacts
+from src.common.data import load_npy_sample
+from src.common.manifest import build_all_records, load_manifest, scan_data_records
+from src.common.metrics import LatencyMeter, argmax_predictions
+from src.common.report import create_run_directory, to_repo_relative, write_csv, write_json
+
+
+class EfficiencyRunError(RuntimeError):
+    """效率评测执行失败。"""
+
+
+def main() -> None:
+    args = parse_efficiency_args()
+    artifacts = resolve_artifacts(args.branch, artifact_path=args.artifact_path, scan_root=args.scan_root)
+    manifest = load_manifest(args.split_manifest)
+    records = select_records(args, manifest)
+    if args.limit is not None:
+        records = records[: args.limit]
+    if not records:
+        raise EfficiencyRunError("评测数据为空，无法执行效率评测")
+
+    run_dir = create_run_directory(args.output_root, args.branch)
+    summary_rows: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
+
+    for artifact in artifacts:
+        try:
+            summary_rows.append(run_efficiency_for_artifact(artifact, records, run_dir, args))
+        except Exception as exc:
+            if args.fail_fast:
+                raise
+            failures.append(
+                {
+                    "model_name": artifact.model_name,
+                    "experiment_name": artifact.experiment_name,
+                    "artifact_path": to_repo_relative(artifact.model_path),
+                    "error": str(exc),
+                }
+            )
+
+    write_json(
+        run_dir / "summary.json",
+        {
+            "branch": args.branch,
+            "dataset_scope": args.dataset_scope,
+            "time_mode": args.time_mode,
+            "run_dir": to_repo_relative(run_dir),
+            "artifacts_total": len(artifacts),
+            "artifacts_succeeded": len(summary_rows),
+            "artifacts_failed": len(failures),
+            "results": summary_rows,
+            "failures": failures,
+        },
+    )
+    write_csv(run_dir / "summary.csv", summary_rows)
+    if failures:
+        write_csv(run_dir / "failures.csv", failures)
+
+
+def select_records(args, manifest: dict[str, object]):
+    if args.dataset_scope == "manifest_all":
+        return build_all_records(manifest, args.data_dir)
+    if args.dataset_scope == "data_all":
+        class_names = [str(name) for name in manifest["class_names"]]
+        return scan_data_records(args.data_dir, class_names=class_names)
+    raise EfficiencyRunError(f"不支持的 dataset_scope: {args.dataset_scope}")
+
+
+def run_efficiency_for_artifact(
+    artifact: ArtifactRecord,
+    records,
+    run_dir: Path,
+    args,
+) -> dict[str, object]:
+    artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
+    meter = LatencyMeter()
+
+    with ACLModelRunner(artifact, device_id=args.device_id) as runner:
+        if args.warmup_steps > 0:
+            warmup_cycle = itertools.cycle(records)
+            for _ in range(args.warmup_steps):
+                record = next(warmup_cycle)
+                sample = load_npy_sample(record.file_path, artifact.input_spec.dtype)
+                runner.infer(sample)
+
+        for _ in range(args.repeat):
+            for record in records:
+                start_e2e = time.perf_counter()
+                sample = load_npy_sample(record.file_path, artifact.input_spec.dtype)
+                outputs, infer_ms = runner.infer_with_timing(sample)
+                argmax_predictions(outputs[0], axis=1)
+                end_to_end_ms = (time.perf_counter() - start_e2e) * 1000.0
+                meter.record(infer_ms, end_to_end_ms)
+
+    summary = {
+        "branch": artifact.branch,
+        "model_name": artifact.model_name,
+        "experiment_name": artifact.experiment_name,
+        "artifact_path": to_repo_relative(artifact.model_path),
+        "summary_path": to_repo_relative(artifact.summary_path),
+        "dataset_scope": args.dataset_scope,
+        "time_mode": args.time_mode,
+        "warmup_steps": args.warmup_steps,
+        "repeat": args.repeat,
+        "input_dtype": str(artifact.input_spec.dtype),
+        "output_dtype": str(artifact.output_specs[0].dtype),
+    }
+    summary.update(filter_summary_by_time_mode(meter.build_summary(samples=len(records) * args.repeat), args.time_mode))
+    write_json(artifact_dir / "summary.json", summary)
+    return summary
+
+
+def filter_summary_by_time_mode(summary: dict[str, object], time_mode: str) -> dict[str, object]:
+    if time_mode == "both":
+        return summary
+    if time_mode == "pure":
+        return {key: value for key, value in summary.items() if not key.startswith("end_to_end_")}
+    if time_mode == "end_to_end":
+        return {
+            key: value
+            for key, value in summary.items()
+            if not key.startswith("pure_infer_") and key not in {"avg_latency_ms", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms"}
+        }
+    raise EfficiencyRunError(f"不支持的 time_mode: {time_mode}")
+
+
+if __name__ == "__main__":
+    main()
