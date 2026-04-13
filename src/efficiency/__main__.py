@@ -4,10 +4,12 @@ import itertools
 import time
 from pathlib import Path
 
+import numpy as np
+
 from src.common.acl_runner import ACLModelRunner
 from src.common.args import parse_efficiency_args
 from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
-from src.common.data import load_npy_sample
+from src.common.data import RuntimeInputAdapter, preload_npy_samples
 from src.common.manifest import build_all_records, load_manifest, scan_data_records
 from src.common.metrics import LatencyMeter, argmax_predictions
 from src.common.report import create_run_directory, to_repo_relative, write_json
@@ -27,8 +29,10 @@ def main() -> None:
     if not records:
         raise EfficiencyRunError("评测数据为空，无法执行效率评测")
 
+    preloaded_samples = preload_npy_samples(records)
+
     run_dir = create_run_directory(args.output_root, args.branch)
-    run_efficiency_for_artifact(artifact, records, run_dir, args)
+    run_efficiency_for_artifact(artifact, preloaded_samples, run_dir, args)
     print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
 
 
@@ -43,29 +47,32 @@ def select_records(args, manifest: dict[str, object]):
 
 def run_efficiency_for_artifact(
     artifact: ArtifactRecord,
-    records,
+    preloaded_samples,
     run_dir: Path,
     args,
 ) -> dict[str, object]:
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
     meter = LatencyMeter()
+    input_adapter = RuntimeInputAdapter(artifact.input_spec)
 
     with ACLModelRunner(artifact, device_id=args.device_id) as runner:
         if args.warmup_steps > 0:
-            warmup_cycle = itertools.cycle(records)
+            warmup_cycle = itertools.cycle(preloaded_samples)
             for _ in range(args.warmup_steps):
-                record = next(warmup_cycle)
-                sample = load_npy_sample(record.file_path, artifact.input_spec.dtype)
+                preloaded = next(warmup_cycle)
+                sample = input_adapter.adapt(preloaded.input_fp16)
                 runner.infer(sample)
 
         for _ in range(args.repeat):
-            for record in records:
+            for preloaded in preloaded_samples:
                 start_e2e = time.perf_counter()
-                sample = load_npy_sample(record.file_path, artifact.input_spec.dtype)
+                sample = input_adapter.adapt(preloaded.input_fp16)
                 outputs, infer_ms = runner.infer_with_timing(sample)
                 argmax_predictions(outputs[0], axis=1)
                 end_to_end_ms = (time.perf_counter() - start_e2e) * 1000.0
                 meter.record(infer_ms, end_to_end_ms)
+
+    total_samples = len(preloaded_samples) * args.repeat
 
     summary = {
         "branch": artifact.branch,
@@ -74,13 +81,14 @@ def run_efficiency_for_artifact(
         "artifact_path": to_repo_relative(artifact.model_path),
         "summary_path": to_repo_relative(artifact.summary_path),
         "dataset_scope": args.dataset_scope,
-        "time_mode": args.time_mode,
         "warmup_steps": args.warmup_steps,
         "repeat": args.repeat,
+        "preload_dtype": str(np.dtype(np.float16)),
         "input_dtype": str(artifact.input_spec.dtype),
         "output_dtype": str(artifact.output_specs[0].dtype),
+        "time_mode": args.time_mode,
     }
-    summary.update(filter_summary_by_time_mode(meter.build_summary(samples=len(records) * args.repeat), args.time_mode))
+    summary.update(filter_summary_by_time_mode(meter.build_summary(samples=total_samples), args.time_mode))
     write_json(artifact_dir / "summary.json", summary)
     return summary
 

@@ -7,7 +7,7 @@ import numpy as np
 from src.common.acl_runner import ACLModelRunner
 from src.common.args import parse_accuracy_args
 from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
-from src.common.data import load_npy_sample
+from src.common.data import RuntimeInputAdapter, preload_npy_samples
 from src.common.manifest import build_test_records, load_manifest
 from src.common.metrics import (
     ConfusionMatrixAccumulator,
@@ -40,14 +40,16 @@ def main() -> None:
     if not records:
         raise AccuracyRunError("test 集为空，无法执行精度评测")
 
+    preloaded_samples = preload_npy_samples(records)
+
     run_dir = create_run_directory(args.output_root, args.branch)
-    run_accuracy_for_artifact(artifact, records, class_names, run_dir, args.device_id, args)
+    run_accuracy_for_artifact(artifact, preloaded_samples, class_names, run_dir, args.device_id, args)
     print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
 
 
 def run_accuracy_for_artifact(
     artifact: ArtifactRecord,
-    records,
+    preloaded_samples,
     class_names: list[str],
     run_dir: Path,
     device_id: int,
@@ -57,15 +59,16 @@ def run_accuracy_for_artifact(
     confusion = ConfusionMatrixAccumulator(num_classes=len(class_names))
     total_loss = 0.0
     total_samples = 0
+    input_adapter = RuntimeInputAdapter(artifact.input_spec)
 
     with ACLModelRunner(artifact, device_id=device_id) as runner:
-        for record in records:
-            sample = load_npy_sample(record.file_path, artifact.input_spec.dtype)
-            outputs, _ = runner.infer_with_timing(sample)
+        for preloaded in preloaded_samples:
+            sample = input_adapter.adapt(preloaded.input_fp16)
+            outputs = runner.infer(sample)
             logits = outputs[0]
             probabilities = softmax_np(logits, axis=1)
             predictions = argmax_predictions(probabilities, axis=1)
-            labels = np.asarray([record.label_idx], dtype=np.int64)
+            labels = np.asarray([preloaded.record.label_idx], dtype=np.int64)
             losses = cross_entropy_from_logits(logits.astype(np.float64, copy=False), labels)
             confusion.update(predictions, labels)
             total_loss += float(losses.sum())

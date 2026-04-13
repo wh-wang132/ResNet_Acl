@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
+
+from .artifact_scanner import TensorSpec
+from .manifest import SampleRecord
 
 
 EXPECTED_SAMPLE_SHAPE = (543, 512)
@@ -13,7 +18,36 @@ class DataError(RuntimeError):
     """样本读取或预处理失败。"""
 
 
-def load_npy_sample(file_path: str | Path, dtype: np.dtype) -> np.ndarray:
+@dataclass(frozen=True)
+class PreloadedSample:
+    record: SampleRecord
+    input_fp16: np.ndarray
+
+
+class RuntimeInputAdapter:
+    def __init__(self, input_spec: TensorSpec):
+        self._shape = tuple(input_spec.shape)
+        self._target_dtype = np.dtype(input_spec.dtype)
+        self._fp32_buffer = np.empty(self._shape, dtype=np.float32) if self._target_dtype == np.float32 else None
+
+    def adapt(self, input_fp16: np.ndarray) -> np.ndarray:
+        if tuple(input_fp16.shape) != self._shape:
+            raise DataError(f"预加载输入 shape 不匹配: expected={self._shape}, actual={tuple(input_fp16.shape)}")
+        if np.dtype(input_fp16.dtype) != np.float16:
+            raise DataError(f"预加载输入 dtype 必须为 float16，实际为 {input_fp16.dtype}")
+        if not input_fp16.flags.c_contiguous:
+            raise DataError("预加载输入数组必须是 C contiguous")
+
+        if self._target_dtype == np.float16:
+            return input_fp16
+        if self._target_dtype == np.float32:
+            assert self._fp32_buffer is not None
+            np.copyto(self._fp32_buffer, input_fp16)
+            return self._fp32_buffer
+        raise DataError(f"不支持的目标输入 dtype: {self._target_dtype}")
+
+
+def _load_npy_array(file_path: str | Path) -> np.ndarray:
     path = Path(file_path)
     if not path.exists():
         raise DataError(f"找不到样本文件: {path}")
@@ -25,11 +59,33 @@ def load_npy_sample(file_path: str | Path, dtype: np.dtype) -> np.ndarray:
 
     if not isinstance(data, np.ndarray):
         raise DataError(f"样本不是 numpy.ndarray: {path}")
+    return data
+
+
+def prepare_sample_array(data: np.ndarray, dtype: np.dtype, *, file_path: str | Path | None = None) -> np.ndarray:
     if tuple(data.shape) != EXPECTED_SAMPLE_SHAPE:
+        location = f"path={file_path}, " if file_path is not None else ""
         raise DataError(
-            f"样本形状不合法: path={path}, expected={EXPECTED_SAMPLE_SHAPE}, actual={tuple(data.shape)}"
+            f"样本形状不合法: {location}expected={EXPECTED_SAMPLE_SHAPE}, actual={tuple(data.shape)}"
         )
 
-    casted = data.astype(dtype, copy=False)
+    casted = data.astype(np.dtype(dtype), copy=False)
     batched = np.expand_dims(np.expand_dims(casted, axis=0), axis=0)
     return np.ascontiguousarray(batched)
+
+
+def load_npy_sample(file_path: str | Path, dtype: np.dtype) -> np.ndarray:
+    data = _load_npy_array(file_path)
+    return prepare_sample_array(data, dtype, file_path=file_path)
+
+
+def preload_npy_samples(
+    records: Iterable[SampleRecord],
+    *,
+    preload_dtype: np.dtype = np.float16,
+) -> list[PreloadedSample]:
+    target_dtype = np.dtype(preload_dtype)
+    return [
+        PreloadedSample(record=record, input_fp16=load_npy_sample(record.file_path, target_dtype))
+        for record in records
+    ]
