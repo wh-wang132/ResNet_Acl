@@ -18,6 +18,7 @@ ACL_MEMCPY_HOST_TO_DEVICE = 1
 ACL_MEMCPY_DEVICE_TO_HOST = 2
 ACL_MEM_MALLOC_HUGE_FIRST = 0
 QUEUE_POLL_TIMEOUT_SECONDS = 0.1
+SEQ_WINDOW_FACTOR = 4096
 ITEMSIZE_TO_TENSOR_META: dict[int, tuple[np.dtype, int]] = {
     int(np.dtype(np.float16).itemsize): (np.dtype(np.float16), 10),
     int(np.dtype(np.float32).itemsize): (np.dtype(np.float32), 1),
@@ -486,6 +487,10 @@ class ACLConcurrentOrderedExecutor:
         return self._active_instances
 
     @property
+    def seq_window(self) -> int:
+        return SEQ_WINDOW_FACTOR * self._active_instances
+
+    @property
     def input_spec(self) -> TensorSpec:
         if self._model_input_spec is None:
             raise ACLRuntimeError("并发执行器尚未读取模型输入规格")
@@ -520,6 +525,7 @@ class ACLConcurrentOrderedExecutor:
             return
 
         self._active_instances = min(self.num_instances, len(preloaded_samples))
+        self._validate_seq_window_constraints()
         self._model_input_spec = None
         self._model_output_specs = ()
         self._run_started_ns = None
@@ -557,14 +563,15 @@ class ACLConcurrentOrderedExecutor:
             dispatcher_thread.start()
 
             total_jobs = len(preloaded_samples) * repeat
-            for expected_seq in range(total_jobs):
+            for expected_index in range(total_jobs):
                 failure = self._poll_failure(error_queue)
                 if failure is not None:
                     raise ACLRuntimeError(
                         f"并发推理在 {failure.phase} 阶段失败，worker_id={failure.worker_id}: {failure.error}"
                     ) from failure.error
 
-                worker_id = expected_seq % self._active_instances
+                worker_id = expected_index % self._active_instances
+                expected_slot = expected_index % self.seq_window
                 output_queue = workers[worker_id].output_queue
                 while True:
                     try:
@@ -576,9 +583,11 @@ class ACLConcurrentOrderedExecutor:
                                 f"并发推理在 {failure.phase} 阶段失败，worker_id={failure.worker_id}: {failure.error}"
                             ) from failure.error
                         continue
-                    if result.seq_id != expected_seq:
+                    if result.seq_id != expected_slot:
                         raise ACLRuntimeError(
-                            f"并发推理顺序错误: expected_seq={expected_seq}, actual_seq={result.seq_id}, worker_id={worker_id}"
+                            "并发推理顺序错误: "
+                            f"expected_slot={expected_slot}, actual_slot={result.seq_id}, "
+                            f"worker_id={worker_id}, seq_window={self.seq_window}"
                         )
                     self._last_result_ready_ns = time.perf_counter_ns()
                     yield result
@@ -745,29 +754,37 @@ class ACLConcurrentOrderedExecutor:
         error_queue: queue.Queue[_WorkerFailure],
     ) -> None:
         try:
-            seq_id = 0
+            dispatch_index = 0
             for _ in range(repeat):
                 for sample_index, preloaded in enumerate(preloaded_samples):
                     if stop_event.is_set():
                         return
+                    seq_slot = dispatch_index % self.seq_window
                     task = _InferenceTask(
-                        seq_id=seq_id,
+                        seq_id=seq_slot,
                         sample_index=sample_index,
                         preloaded=preloaded,
                         dispatch_started_ns=time.perf_counter_ns(),
                     )
-                    input_queue = workers[seq_id % self._active_instances].input_queue
+                    input_queue = workers[dispatch_index % self._active_instances].input_queue
                     while not stop_event.is_set():
                         try:
                             input_queue.put(task, timeout=QUEUE_POLL_TIMEOUT_SECONDS)
                         except queue.Full:
                             continue
                         break
-                    seq_id += 1
+                    dispatch_index += 1
         except Exception as exc:
             if not stop_event.is_set():
                 error_queue.put(_WorkerFailure(worker_id=-1, phase="dispatcher", error=exc))
                 stop_event.set()
+
+    def _validate_seq_window_constraints(self) -> None:
+        if 2 * self.buffer_depth + 1 >= SEQ_WINDOW_FACTOR:
+            raise ACLRuntimeError(
+                "buffer_depth 过大，无法保证有限循环编号安全复用: "
+                f"buffer_depth={self.buffer_depth}, seq_window_factor={SEQ_WINDOW_FACTOR}"
+            )
 
     @staticmethod
     def _poll_failure(error_queue: queue.Queue[_WorkerFailure]) -> _WorkerFailure | None:
