@@ -11,6 +11,10 @@ from .artifact_scanner import ArtifactRecord, TensorSpec
 ACL_MEMCPY_HOST_TO_DEVICE = 1
 ACL_MEMCPY_DEVICE_TO_HOST = 2
 ACL_MEM_MALLOC_HUGE_FIRST = 0
+ITEMSIZE_TO_TENSOR_META: dict[int, tuple[np.dtype, int]] = {
+    int(np.dtype(np.float16).itemsize): (np.dtype(np.float16), 10),
+    int(np.dtype(np.float32).itemsize): (np.dtype(np.float32), 1),
+}
 
 
 class ACLRuntimeError(RuntimeError):
@@ -33,6 +37,8 @@ class ACLModelRunner:
         self._input_sizes: list[int] = []
         self._output_sizes: list[int] = []
         self._output_host_ptrs: list[int] = []
+        self._model_input_spec: TensorSpec | None = None
+        self._model_output_specs: tuple[TensorSpec, ...] = ()
         self._opened = False
 
     def __enter__(self) -> "ACLModelRunner":
@@ -55,6 +61,7 @@ class ACLModelRunner:
         )
         self._model_desc = acl.mdl.create_desc()
         self._check_ret(acl.mdl.get_desc(self._model_desc, self._model_id), "acl.mdl.get_desc")
+        self._load_model_specs()
         self._prepare_io()
         self._opened = True
 
@@ -87,6 +94,8 @@ class ACLModelRunner:
             self._context = None
         self._check_ret(acl.rt.reset_device(self.device_id), f"acl.rt.reset_device({self.device_id})", raise_on_error=False)
         self._check_ret(acl.finalize(), "acl.finalize", raise_on_error=False)
+        self._model_input_spec = None
+        self._model_output_specs = ()
         self._opened = False
 
     def infer(self, input_array: np.ndarray) -> tuple[np.ndarray, ...]:
@@ -96,7 +105,7 @@ class ACLModelRunner:
     def infer_with_timing(self, input_array: np.ndarray) -> tuple[tuple[np.ndarray, ...], float]:
         self._ensure_opened()
         self._check_ret(acl.rt.set_context(self._context), "acl.rt.set_context")
-        self._validate_input_array(input_array, self.artifact.input_spec)
+        self._validate_input_array(input_array, self.input_spec)
         host_input = input_array.tobytes()
         self._check_ret(
             acl.rt.memcpy(
@@ -115,7 +124,7 @@ class ACLModelRunner:
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         outputs: list[np.ndarray] = []
-        for index, spec in enumerate(self.artifact.output_specs):
+        for index, spec in enumerate(self.output_specs):
             self._check_ret(
                 acl.rt.memcpy(
                     self._output_host_ptrs[index],
@@ -131,7 +140,19 @@ class ACLModelRunner:
             outputs.append(output)
         return tuple(outputs), elapsed_ms
 
-    def _prepare_io(self) -> None:
+    @property
+    def input_spec(self) -> TensorSpec:
+        if self._model_input_spec is None:
+            raise ACLRuntimeError("ACLModelRunner 尚未读取模型输入规格")
+        return self._model_input_spec
+
+    @property
+    def output_specs(self) -> tuple[TensorSpec, ...]:
+        if not self._model_output_specs:
+            raise ACLRuntimeError("ACLModelRunner 尚未读取模型输出规格")
+        return self._model_output_specs
+
+    def _load_model_specs(self) -> None:
         input_count = int(acl.mdl.get_num_inputs(self._model_desc))
         output_count = int(acl.mdl.get_num_outputs(self._model_desc))
         if input_count != 1:
@@ -140,15 +161,38 @@ class ACLModelRunner:
             raise ACLRuntimeError(
                 f"OM 输出数与摘要不一致: model={output_count}, summary={len(self.artifact.output_specs)}"
             )
-        self._validate_tensor_desc(self.artifact.input_spec, acl.mdl.get_input_dims(self._model_desc, 0), "input")
-        for index, spec in enumerate(self.artifact.output_specs):
-            self._validate_tensor_desc(spec, acl.mdl.get_output_dims(self._model_desc, index), f"output[{index}]")
 
+        input_shape = self._read_tensor_shape(acl.mdl.get_input_dims(self._model_desc, 0), "input")
+        input_size = int(acl.mdl.get_input_size_by_index(self._model_desc, 0))
+        input_dtype, input_elem_type = self._infer_tensor_meta(input_shape, input_size, "input")
+        self._model_input_spec = TensorSpec(
+            name=self.artifact.input_spec.name,
+            shape=input_shape,
+            dtype=input_dtype,
+            elem_type=input_elem_type,
+        )
+
+        output_specs: list[TensorSpec] = []
+        for index, artifact_output_spec in enumerate(self.artifact.output_specs):
+            output_shape = self._read_tensor_shape(acl.mdl.get_output_dims(self._model_desc, index), f"output[{index}]")
+            output_size = int(acl.mdl.get_output_size_by_index(self._model_desc, index))
+            output_dtype, output_elem_type = self._infer_tensor_meta(output_shape, output_size, f"output[{index}]")
+            output_specs.append(
+                TensorSpec(
+                    name=artifact_output_spec.name,
+                    shape=output_shape,
+                    dtype=output_dtype,
+                    elem_type=output_elem_type,
+                )
+            )
+        self._model_output_specs = tuple(output_specs)
+
+    def _prepare_io(self) -> None:
         self._input_dataset = acl.mdl.create_dataset()
         self._output_dataset = acl.mdl.create_dataset()
 
         input_size = int(acl.mdl.get_input_size_by_index(self._model_desc, 0))
-        expected_input_size = self._expected_nbytes(self.artifact.input_spec)
+        expected_input_size = self._expected_nbytes(self.input_spec)
         if input_size != expected_input_size:
             raise ACLRuntimeError(
                 f"OM 输入字节数与摘要不一致: model={input_size}, summary={expected_input_size}"
@@ -163,7 +207,7 @@ class ACLModelRunner:
         self._input_buffers.append(input_buffer)
         self._input_sizes.append(input_size)
 
-        for index, spec in enumerate(self.artifact.output_specs):
+        for index, spec in enumerate(self.output_specs):
             output_size = int(acl.mdl.get_output_size_by_index(self._model_desc, index))
             expected_output_size = self._expected_nbytes(spec)
             if output_size != expected_output_size:
@@ -203,13 +247,28 @@ class ACLModelRunner:
             raise ACLRuntimeError("输入数组必须是 C contiguous")
 
     @staticmethod
-    def _validate_tensor_desc(spec: TensorSpec, raw_dims: tuple[dict[str, Any], int], name: str) -> None:
+    def _read_tensor_shape(raw_dims: tuple[dict[str, Any], int], name: str) -> tuple[int, ...]:
         dims_info, ret = raw_dims
         if ret != 0:
             raise ACLRuntimeError(f"读取 {name} 维度失败，ret={ret}")
-        actual_shape = tuple(int(dim) for dim in dims_info["dims"][: dims_info["dimCount"]])
-        if actual_shape != spec.shape:
-            raise ACLRuntimeError(f"{name} shape 不匹配: expected={spec.shape}, actual={actual_shape}")
+        return tuple(int(dim) for dim in dims_info["dims"][: dims_info["dimCount"]])
+
+    @staticmethod
+    def _infer_tensor_meta(shape: tuple[int, ...], buffer_size: int, name: str) -> tuple[np.dtype, int]:
+        element_count = int(np.prod(shape))
+        if element_count <= 0:
+            raise ACLRuntimeError(f"{name} shape 非法，无法推断 dtype: shape={shape}")
+        if buffer_size % element_count != 0:
+            raise ACLRuntimeError(
+                f"{name} 字节数无法被 shape 整除，无法推断 dtype: shape={shape}, buffer_size={buffer_size}"
+            )
+        itemsize = buffer_size // element_count
+        try:
+            return ITEMSIZE_TO_TENSOR_META[itemsize]
+        except KeyError as exc:
+            raise ACLRuntimeError(
+                f"{name} 不支持的元素字节数，无法推断 dtype: shape={shape}, buffer_size={buffer_size}"
+            ) from exc
 
     @staticmethod
     def _expected_nbytes(spec: TensorSpec) -> int:

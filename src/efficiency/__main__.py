@@ -9,7 +9,7 @@ import numpy as np
 from src.common.acl_runner import ACLModelRunner
 from src.common.args import parse_efficiency_args
 from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
-from src.common.data import RuntimeInputAdapter, preload_npy_samples
+from src.common.data import RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
 from src.common.manifest import build_all_records, load_manifest, scan_data_records
 from src.common.metrics import LatencyMeter, argmax_predictions
 from src.common.report import create_run_directory, to_repo_relative, write_json
@@ -29,7 +29,7 @@ def main() -> None:
     if not records:
         raise EfficiencyRunError("评测数据为空，无法执行效率评测")
 
-    preloaded_samples = preload_npy_samples(records)
+    preloaded_samples = preload_npy_samples(records, artifact.input_spec)
 
     run_dir = create_run_directory(args.output_root, args.branch)
     run_efficiency_for_artifact(artifact, preloaded_samples, run_dir, args)
@@ -53,9 +53,12 @@ def run_efficiency_for_artifact(
 ) -> dict[str, object]:
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
     meter = LatencyMeter()
-    input_adapter = RuntimeInputAdapter(artifact.input_spec)
 
     with ACLModelRunner(artifact, device_id=args.device_id) as runner:
+        validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
+        input_adapter = RuntimeInputAdapter(runner.input_spec)
+        model_input_spec = runner.input_spec
+        model_output_spec = runner.output_specs[0]
         if args.warmup_steps > 0:
             warmup_cycle = itertools.cycle(preloaded_samples)
             for _ in range(args.warmup_steps):
@@ -84,8 +87,8 @@ def run_efficiency_for_artifact(
         "warmup_steps": args.warmup_steps,
         "repeat": args.repeat,
         "preload_dtype": str(np.dtype(np.float16)),
-        "input_dtype": str(artifact.input_spec.dtype),
-        "output_dtype": str(artifact.output_specs[0].dtype),
+        "input_dtype": str(model_input_spec.dtype),
+        "output_dtype": str(model_output_spec.dtype),
         "time_mode": args.time_mode,
     }
     summary.update(filter_summary_by_time_mode(meter.build_summary(samples=total_samples), args.time_mode))

@@ -7,7 +7,7 @@ import numpy as np
 from src.common.acl_runner import ACLModelRunner
 from src.common.args import parse_accuracy_args
 from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
-from src.common.data import RuntimeInputAdapter, preload_npy_samples
+from src.common.data import RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
 from src.common.manifest import build_test_records, load_manifest
 from src.common.metrics import (
     ConfusionMatrixAccumulator,
@@ -40,7 +40,7 @@ def main() -> None:
     if not records:
         raise AccuracyRunError("test 集为空，无法执行精度评测")
 
-    preloaded_samples = preload_npy_samples(records)
+    preloaded_samples = preload_npy_samples(records, artifact.input_spec)
 
     run_dir = create_run_directory(args.output_root, args.branch)
     run_accuracy_for_artifact(artifact, preloaded_samples, class_names, run_dir, args.device_id, args)
@@ -59,9 +59,12 @@ def run_accuracy_for_artifact(
     confusion = ConfusionMatrixAccumulator(num_classes=len(class_names))
     total_loss = 0.0
     total_samples = 0
-    input_adapter = RuntimeInputAdapter(artifact.input_spec)
 
     with ACLModelRunner(artifact, device_id=device_id) as runner:
+        validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
+        input_adapter = RuntimeInputAdapter(runner.input_spec)
+        model_input_spec = runner.input_spec
+        model_output_spec = runner.output_specs[0]
         for preloaded in preloaded_samples:
             sample = input_adapter.adapt(preloaded.input_fp16)
             outputs = runner.infer(sample)
@@ -83,12 +86,12 @@ def run_accuracy_for_artifact(
         "samples": total_samples,
         "accuracy": confusion.accuracy(),
         "avg_loss": float(total_loss / total_samples) if total_samples else 0.0,
-        "input_name": artifact.input_spec.name,
-        "input_shape": list(artifact.input_spec.shape),
-        "input_dtype": str(artifact.input_spec.dtype),
-        "output_name": artifact.output_specs[0].name,
-        "output_shape": list(artifact.output_specs[0].shape),
-        "output_dtype": str(artifact.output_specs[0].dtype),
+        "input_name": model_input_spec.name,
+        "input_shape": list(model_input_spec.shape),
+        "input_dtype": str(model_input_spec.dtype),
+        "output_name": model_output_spec.name,
+        "output_shape": list(model_output_spec.shape),
+        "output_dtype": str(model_output_spec.dtype),
         "confusion_matrix_csv": to_repo_relative(
             write_confusion_matrix_csv(artifact_dir / "confusion_matrix.csv", confusion.matrix, class_names)
         ),

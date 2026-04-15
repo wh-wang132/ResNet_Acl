@@ -9,9 +9,7 @@ import numpy as np
 from .artifact_scanner import TensorSpec
 from .manifest import SampleRecord
 
-
-EXPECTED_SAMPLE_SHAPE = (543, 512)
-EXPECTED_BATCHED_SHAPE = (1, 1, 543, 512)
+MAX_SHAPE_VALIDATION_SAMPLES = 32
 
 
 class DataError(RuntimeError):
@@ -62,30 +60,91 @@ def _load_npy_array(file_path: str | Path) -> np.ndarray:
     return data
 
 
-def prepare_sample_array(data: np.ndarray, dtype: np.dtype, *, file_path: str | Path | None = None) -> np.ndarray:
-    if tuple(data.shape) != EXPECTED_SAMPLE_SHAPE:
-        location = f"path={file_path}, " if file_path is not None else ""
-        raise DataError(
-            f"样本形状不合法: {location}expected={EXPECTED_SAMPLE_SHAPE}, actual={tuple(data.shape)}"
-        )
+def _resolve_preloaded_shape(
+    sample_shape: tuple[int, ...],
+    target_shape: tuple[int, ...],
+    *,
+    file_path: str | Path | None = None,
+) -> tuple[int, ...]:
+    if sample_shape == target_shape:
+        return target_shape
 
+    rank_diff = len(target_shape) - len(sample_shape)
+    if rank_diff >= 0 and sample_shape == target_shape[rank_diff:] and all(dim == 1 for dim in target_shape[:rank_diff]):
+        return target_shape
+
+    location = f"path={file_path}, " if file_path is not None else ""
+    raise DataError(
+        "样本形状无法通过预加载阶段补前导 1 维匹配摘要输入: "
+        f"{location}raw_shape={sample_shape}, target_shape={target_shape}"
+    )
+
+
+def prepare_sample_array(
+    data: np.ndarray,
+    target_shape: tuple[int, ...],
+    dtype: np.dtype,
+    *,
+    file_path: str | Path | None = None,
+) -> np.ndarray:
+    normalized_shape = _resolve_preloaded_shape(tuple(data.shape), tuple(target_shape), file_path=file_path)
     casted = data.astype(np.dtype(dtype), copy=False)
-    batched = np.expand_dims(np.expand_dims(casted, axis=0), axis=0)
-    return np.ascontiguousarray(batched)
+    normalized = casted.reshape(normalized_shape)
+    return np.ascontiguousarray(normalized)
 
 
-def load_npy_sample(file_path: str | Path, dtype: np.dtype) -> np.ndarray:
+def load_npy_sample(file_path: str | Path, target_shape: tuple[int, ...], dtype: np.dtype) -> np.ndarray:
     data = _load_npy_array(file_path)
-    return prepare_sample_array(data, dtype, file_path=file_path)
+    return prepare_sample_array(data, target_shape, dtype, file_path=file_path)
 
 
 def preload_npy_samples(
     records: Iterable[SampleRecord],
+    input_spec: TensorSpec,
     *,
     preload_dtype: np.dtype = np.float16,
 ) -> list[PreloadedSample]:
     target_dtype = np.dtype(preload_dtype)
+    target_shape = tuple(input_spec.shape)
     return [
-        PreloadedSample(record=record, input_fp16=load_npy_sample(record.file_path, target_dtype))
+        PreloadedSample(
+            record=record,
+            input_fp16=load_npy_sample(record.file_path, target_shape, target_dtype),
+        )
         for record in records
     ]
+
+
+def _select_validation_sample_indices(total_samples: int, max_samples: int) -> list[int]:
+    if total_samples <= 0:
+        return []
+    if total_samples <= max_samples:
+        return list(range(total_samples))
+    if max_samples <= 1:
+        return [0]
+    return sorted({round(index * (total_samples - 1) / (max_samples - 1)) for index in range(max_samples)})
+
+
+def validate_preloaded_sample_shapes(
+    preloaded_samples: list[PreloadedSample],
+    summary_input_spec: TensorSpec,
+    model_input_spec: TensorSpec,
+    *,
+    max_samples: int = MAX_SHAPE_VALIDATION_SAMPLES,
+) -> None:
+    if not preloaded_samples:
+        raise DataError("预加载样本为空，无法执行推理前 shape 抽样校验")
+
+    summary_shape = tuple(summary_input_spec.shape)
+    model_shape = tuple(model_input_spec.shape)
+    sampled_indices = _select_validation_sample_indices(len(preloaded_samples), max_samples)
+
+    for sample_index in sampled_indices:
+        preloaded = preloaded_samples[sample_index]
+        sample_shape = tuple(preloaded.input_fp16.shape)
+        if sample_shape != summary_shape or sample_shape != model_shape:
+            raise DataError(
+                "推理前 shape 三方校验失败: "
+                f"path={preloaded.record.file_path}, sample_shape={sample_shape}, "
+                f"summary_shape={summary_shape}, om_shape={model_shape}"
+            )
