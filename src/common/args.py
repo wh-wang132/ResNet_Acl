@@ -21,6 +21,8 @@ def _base_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--device_id", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--num_instances", type=int, default=1, help="并发 ACL 模型实例数，1 表示串行单实例")
+    parser.add_argument("--buffer_depth", type=int, default=1, help="每个实例的输入/输出阻塞队列深度")
     return parser
 
 
@@ -29,6 +31,10 @@ def _finalize_common_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("当前 ATC 产物按 batch_size=1 编译，推理端暂仅支持 --batch_size 1")
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit 必须为正整数")
+    if args.num_instances <= 0:
+        raise ValueError("--num_instances 必须为正整数")
+    if args.buffer_depth <= 0:
+        raise ValueError("--buffer_depth 必须为正整数")
     args.data_dir = args.data_dir.resolve() if args.data_dir.is_absolute() else (REPO_ROOT / args.data_dir).resolve()
     args.split_manifest = (
         args.split_manifest.resolve()

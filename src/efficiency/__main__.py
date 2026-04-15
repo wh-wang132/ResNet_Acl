@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from src.common.acl_runner import ACLModelRunner
+from src.common.acl_runner import ACLConcurrentOrderedExecutor, ACLModelRunner
 from src.common.args import parse_efficiency_args
 from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
 from src.common.data import RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
@@ -53,29 +53,53 @@ def run_efficiency_for_artifact(
 ) -> dict[str, object]:
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
     meter = LatencyMeter()
-
-    with ACLModelRunner(artifact, device_id=args.device_id) as runner:
-        validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
-        input_adapter = RuntimeInputAdapter(runner.input_spec)
-        model_input_spec = runner.input_spec
-        model_output_spec = runner.output_specs[0]
-        if args.warmup_steps > 0:
-            warmup_cycle = itertools.cycle(preloaded_samples)
-            for _ in range(args.warmup_steps):
-                preloaded = next(warmup_cycle)
-                sample = input_adapter.adapt(preloaded.input_fp16)
-                runner.infer(sample)
-
-        for _ in range(args.repeat):
-            for preloaded in preloaded_samples:
-                start_e2e = time.perf_counter()
-                sample = input_adapter.adapt(preloaded.input_fp16)
-                outputs, infer_ms = runner.infer_with_timing(sample)
-                argmax_predictions(outputs[0], axis=1)
-                end_to_end_ms = (time.perf_counter() - start_e2e) * 1000.0
-                meter.record(infer_ms, end_to_end_ms)
-
     total_samples = len(preloaded_samples) * args.repeat
+    active_instances = 1
+    pure_infer_wall_total_ms: float | None = None
+    end_to_end_wall_total_ms: float | None = None
+
+    if args.num_instances == 1:
+        with ACLModelRunner(artifact, device_id=args.device_id) as runner:
+            validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
+            input_adapter = RuntimeInputAdapter(runner.input_spec)
+            model_input_spec = runner.input_spec
+            model_output_spec = runner.output_specs[0]
+            if args.warmup_steps > 0:
+                warmup_cycle = itertools.cycle(preloaded_samples)
+                for _ in range(args.warmup_steps):
+                    preloaded = next(warmup_cycle)
+                    sample = input_adapter.adapt(preloaded.input_fp16)
+                    runner.infer(sample)
+
+            for _ in range(args.repeat):
+                for preloaded in preloaded_samples:
+                    start_e2e = time.perf_counter()
+                    sample = input_adapter.adapt(preloaded.input_fp16)
+                    outputs, infer_ms = runner.infer_with_timing(sample)
+                    argmax_predictions(outputs[0], axis=1)
+                    end_to_end_ms = (time.perf_counter() - start_e2e) * 1000.0
+                    meter.record(infer_ms, end_to_end_ms)
+    else:
+        executor = ACLConcurrentOrderedExecutor(
+            artifact,
+            device_id=args.device_id,
+            num_instances=args.num_instances,
+            buffer_depth=args.buffer_depth,
+        )
+        for result in executor.iter_ordered(
+            preloaded_samples,
+            repeat=args.repeat,
+            warmup_steps=args.warmup_steps,
+        ):
+            argmax_predictions(result.outputs[0], axis=1)
+            end_to_end_ms = (time.perf_counter_ns() - result.dispatch_started_ns) / 1_000_000.0
+            meter.record(result.pure_infer_ms, end_to_end_ms)
+        active_instances = executor.active_instances
+        model_input_spec = executor.input_spec
+        model_output_spec = executor.output_specs[0]
+        if executor.run_started_ns is not None and executor.last_result_ready_ns is not None:
+            pure_infer_wall_total_ms = (executor.last_result_ready_ns - executor.run_started_ns) / 1_000_000.0
+            end_to_end_wall_total_ms = (time.perf_counter_ns() - executor.run_started_ns) / 1_000_000.0
 
     summary = {
         "branch": artifact.branch,
@@ -85,13 +109,29 @@ def run_efficiency_for_artifact(
         "summary_path": to_repo_relative(artifact.summary_path),
         "dataset_scope": args.dataset_scope,
         "warmup_steps": args.warmup_steps,
+        "warmup_scope": "global" if args.num_instances == 1 else "per_instance",
         "repeat": args.repeat,
         "preload_dtype": str(np.dtype(np.float16)),
         "input_dtype": str(model_input_spec.dtype),
         "output_dtype": str(model_output_spec.dtype),
+        "execution_mode": "serial" if args.num_instances == 1 else "multi_instance_concurrent",
+        "num_instances": args.num_instances,
+        "active_instances": active_instances,
+        "buffer_depth": args.buffer_depth,
+        "dispatch_policy": "serial" if args.num_instances == 1 else "modulo_round_robin",
+        "ordering_policy": "serial" if args.num_instances == 1 else "strict_modulo_roundtrip",
         "time_mode": args.time_mode,
     }
-    summary.update(filter_summary_by_time_mode(meter.build_summary(samples=total_samples), args.time_mode))
+    summary.update(
+        filter_summary_by_time_mode(
+            meter.build_summary(
+                samples=total_samples,
+                pure_infer_wall_total_ms=pure_infer_wall_total_ms,
+                end_to_end_wall_total_ms=end_to_end_wall_total_ms,
+            ),
+            args.time_mode,
+        )
+    )
     write_json(artifact_dir / "summary.json", summary)
     return summary
 

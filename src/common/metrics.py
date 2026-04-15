@@ -104,11 +104,21 @@ class LatencyMeter:
             "total_ms": float(np.sum(arr)),
         }
 
-    def build_summary(self, samples: int) -> dict[str, float | int]:
+    def build_summary(
+        self,
+        samples: int,
+        *,
+        pure_infer_wall_total_ms: float | None = None,
+        end_to_end_wall_total_ms: float | None = None,
+    ) -> dict[str, float | int]:
         infer_summary = self._summary(self.infer_latencies_ms)
         end_to_end_summary = self._summary(self.end_to_end_latencies_ms)
-        infer_seconds = infer_summary["total_ms"] / 1000.0
-        end_to_end_seconds = end_to_end_summary["total_ms"] / 1000.0
+        infer_wall_ms = infer_summary["total_ms"] if pure_infer_wall_total_ms is None else float(pure_infer_wall_total_ms)
+        end_to_end_wall_ms = (
+            end_to_end_summary["total_ms"] if end_to_end_wall_total_ms is None else float(end_to_end_wall_total_ms)
+        )
+        infer_seconds = infer_wall_ms / 1000.0
+        end_to_end_seconds = end_to_end_wall_ms / 1000.0
         return {
             "samples": samples,
             "avg_latency_ms": infer_summary["avg_ms"],
@@ -116,11 +126,13 @@ class LatencyMeter:
             "p95_latency_ms": infer_summary["p95_ms"],
             "p99_latency_ms": infer_summary["p99_ms"],
             "pure_infer_total_ms": infer_summary["total_ms"],
+            "pure_infer_wall_total_ms": infer_wall_ms,
             "pure_infer_avg_latency_ms": infer_summary["avg_ms"],
             "pure_infer_p50_latency_ms": infer_summary["p50_ms"],
             "pure_infer_p95_latency_ms": infer_summary["p95_ms"],
             "pure_infer_p99_latency_ms": infer_summary["p99_ms"],
             "end_to_end_total_ms": end_to_end_summary["total_ms"],
+            "end_to_end_wall_total_ms": end_to_end_wall_ms,
             "end_to_end_avg_latency_ms": end_to_end_summary["avg_ms"],
             "end_to_end_p50_latency_ms": end_to_end_summary["p50_ms"],
             "end_to_end_p95_latency_ms": end_to_end_summary["p95_ms"],

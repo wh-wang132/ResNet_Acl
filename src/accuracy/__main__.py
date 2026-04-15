@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from src.common.acl_runner import ACLModelRunner
+from src.common.acl_runner import ACLConcurrentOrderedExecutor, ACLModelRunner
 from src.common.args import parse_accuracy_args
 from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
 from src.common.data import RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
@@ -59,23 +59,44 @@ def run_accuracy_for_artifact(
     confusion = ConfusionMatrixAccumulator(num_classes=len(class_names))
     total_loss = 0.0
     total_samples = 0
+    active_instances = 1
 
-    with ACLModelRunner(artifact, device_id=device_id) as runner:
-        validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
-        input_adapter = RuntimeInputAdapter(runner.input_spec)
-        model_input_spec = runner.input_spec
-        model_output_spec = runner.output_specs[0]
-        for preloaded in preloaded_samples:
-            sample = input_adapter.adapt(preloaded.input_fp16)
-            outputs = runner.infer(sample)
-            logits = outputs[0]
+    if args.num_instances == 1:
+        with ACLModelRunner(artifact, device_id=device_id) as runner:
+            validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
+            input_adapter = RuntimeInputAdapter(runner.input_spec)
+            model_input_spec = runner.input_spec
+            model_output_spec = runner.output_specs[0]
+            for preloaded in preloaded_samples:
+                sample = input_adapter.adapt(preloaded.input_fp16)
+                outputs = runner.infer(sample)
+                logits = outputs[0]
+                probabilities = softmax_np(logits, axis=1)
+                predictions = argmax_predictions(probabilities, axis=1)
+                labels = np.asarray([preloaded.record.label_idx], dtype=np.int64)
+                losses = cross_entropy_from_logits(logits.astype(np.float64, copy=False), labels)
+                confusion.update(predictions, labels)
+                total_loss += float(losses.sum())
+                total_samples += int(labels.shape[0])
+    else:
+        executor = ACLConcurrentOrderedExecutor(
+            artifact,
+            device_id=device_id,
+            num_instances=args.num_instances,
+            buffer_depth=args.buffer_depth,
+        )
+        for result in executor.iter_ordered(preloaded_samples):
+            logits = result.outputs[0]
             probabilities = softmax_np(logits, axis=1)
             predictions = argmax_predictions(probabilities, axis=1)
-            labels = np.asarray([preloaded.record.label_idx], dtype=np.int64)
+            labels = np.asarray([result.preloaded.record.label_idx], dtype=np.int64)
             losses = cross_entropy_from_logits(logits.astype(np.float64, copy=False), labels)
             confusion.update(predictions, labels)
             total_loss += float(losses.sum())
             total_samples += int(labels.shape[0])
+        active_instances = executor.active_instances
+        model_input_spec = executor.input_spec
+        model_output_spec = executor.output_specs[0]
 
     summary = {
         "branch": artifact.branch,
@@ -92,6 +113,12 @@ def run_accuracy_for_artifact(
         "output_name": model_output_spec.name,
         "output_shape": list(model_output_spec.shape),
         "output_dtype": str(model_output_spec.dtype),
+        "execution_mode": "serial" if args.num_instances == 1 else "multi_instance_concurrent",
+        "num_instances": args.num_instances,
+        "active_instances": active_instances,
+        "buffer_depth": args.buffer_depth,
+        "dispatch_policy": "serial" if args.num_instances == 1 else "modulo_round_robin",
+        "ordering_policy": "serial" if args.num_instances == 1 else "strict_modulo_roundtrip",
         "confusion_matrix_csv": to_repo_relative(
             write_confusion_matrix_csv(artifact_dir / "confusion_matrix.csv", confusion.matrix, class_names)
         ),
