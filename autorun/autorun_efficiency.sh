@@ -27,6 +27,8 @@ run_branch() {
         pixi run python -m src.efficiency \
             --branch "$branch" \
             --artifact_path "$artifact_dir" \
+            --num_instances 2 \
+            --buffer_depth 1 \
             "$@"
     done < "$tmp_list"
 
