@@ -4,14 +4,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-
-def softmax_np(logits: np.ndarray, axis: int = -1) -> np.ndarray:
-    logits64 = np.asarray(logits, dtype=np.float64)
-    shifted = logits64 - np.max(logits64, axis=axis, keepdims=True)
-    exp_values = np.exp(shifted)
-    return exp_values / np.sum(exp_values, axis=axis, keepdims=True)
-
-
 def argmax_predictions(values: np.ndarray, axis: int = 1) -> np.ndarray:
     return np.argmax(values, axis=axis).astype(np.int64, copy=False)
 

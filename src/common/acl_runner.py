@@ -866,4 +866,10 @@ class ACLConcurrentOrderedExecutor:
             return None
 
 
-__all__ = ["ACLConcurrentOrderedExecutor", "ACLModelRunner", "ACLRuntimeError", "OrderedInferenceResult"]
+__all__ = [
+    "ACLConcurrentOrderedExecutor",
+    "ACLModelRunner",
+    "ACLRuntimeError",
+    "InferenceTimingBreakdown",
+    "OrderedInferenceResult",
+]

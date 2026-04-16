@@ -19,6 +19,10 @@ class EfficiencyRunError(RuntimeError):
     """效率评测执行失败。"""
 
 
+def build_summary_filename(num_instances: int, buffer_depth: int) -> str:
+    return f"summary__instances{int(num_instances)}_buffer{int(buffer_depth)}.json"
+
+
 def main() -> None:
     args = parse_efficiency_args()
     artifact = resolve_artifact(args.branch, args.artifact_path)
@@ -33,7 +37,14 @@ def main() -> None:
 
     run_dir = create_run_directory(args.output_root, args.branch)
     run_efficiency_for_artifact(artifact, preloaded_samples, run_dir, args)
-    print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
+    print(
+        to_repo_relative(
+            run_dir
+            / artifact.model_name
+            / artifact.experiment_name
+            / build_summary_filename(args.num_instances, args.buffer_depth)
+        )
+    )
 
 
 def select_records(args, manifest: dict[str, object]):
@@ -52,11 +63,22 @@ def run_efficiency_for_artifact(
     args,
 ) -> dict[str, object]:
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
+    summary_file_path = artifact_dir / build_summary_filename(args.num_instances, args.buffer_depth)
     meter = LatencyMeter()
+    h2d_stage_total_ms = 0.0
+    h2d_memcpy_total_ms = 0.0
+    execute_wait_total_ms = 0.0
+    d2h_memcpy_total_ms = 0.0
+    output_decode_total_ms = 0.0
+    dispatch_block_total_ms = 0.0
+    collect_wait_total_ms = 0.0
     total_samples = len(preloaded_samples) * args.repeat
     active_instances = 1
+    timing_start_stage = "post_preload_validation_warmup"
     pure_infer_wall_total_ms: float | None = None
     end_to_end_wall_total_ms: float | None = None
+    timing_started_ns: int | None = None
+    timing_finished_ns: int | None = None
 
     if args.num_instances == 1:
         with ACLModelRunner(artifact, device_id=args.device_id) as runner:
@@ -71,14 +93,21 @@ def run_efficiency_for_artifact(
                     sample = input_adapter.adapt(preloaded.input_fp16)
                     runner.infer(sample)
 
+            timing_started_ns = time.perf_counter_ns()
             for _ in range(args.repeat):
                 for preloaded in preloaded_samples:
                     start_e2e = time.perf_counter()
                     sample = input_adapter.adapt(preloaded.input_fp16)
-                    outputs, infer_ms = runner.infer_with_timing(sample)
+                    outputs, infer_ms, timing = runner.infer_with_breakdown(sample)
                     argmax_predictions(outputs[0], axis=1)
                     end_to_end_ms = (time.perf_counter() - start_e2e) * 1000.0
                     meter.record(infer_ms, end_to_end_ms)
+                    h2d_stage_total_ms += timing.h2d_stage_ms
+                    h2d_memcpy_total_ms += timing.h2d_memcpy_ms
+                    execute_wait_total_ms += timing.execute_wait_ms
+                    d2h_memcpy_total_ms += timing.d2h_memcpy_ms
+                    output_decode_total_ms += timing.output_decode_ms
+            timing_finished_ns = time.perf_counter_ns()
     else:
         executor = ACLConcurrentOrderedExecutor(
             artifact,
@@ -94,12 +123,24 @@ def run_efficiency_for_artifact(
             argmax_predictions(result.outputs[0], axis=1)
             end_to_end_ms = (time.perf_counter_ns() - result.dispatch_started_ns) / 1_000_000.0
             meter.record(result.pure_infer_ms, end_to_end_ms)
+            h2d_stage_total_ms += result.timing.h2d_stage_ms
+            h2d_memcpy_total_ms += result.timing.h2d_memcpy_ms
+            execute_wait_total_ms += result.timing.execute_wait_ms
+            d2h_memcpy_total_ms += result.timing.d2h_memcpy_ms
+            output_decode_total_ms += result.timing.output_decode_ms
         active_instances = executor.active_instances
         model_input_spec = executor.input_spec
         model_output_spec = executor.output_specs[0]
+        dispatch_block_total_ms = executor.dispatch_block_total_ms
+        collect_wait_total_ms = executor.collect_wait_total_ms
         if executor.run_started_ns is not None and executor.last_result_ready_ns is not None:
+            timing_started_ns = executor.run_started_ns
+            timing_finished_ns = time.perf_counter_ns()
             pure_infer_wall_total_ms = (executor.last_result_ready_ns - executor.run_started_ns) / 1_000_000.0
-            end_to_end_wall_total_ms = (time.perf_counter_ns() - executor.run_started_ns) / 1_000_000.0
+            end_to_end_wall_total_ms = (timing_finished_ns - timing_started_ns) / 1_000_000.0
+
+    if args.num_instances == 1 and timing_started_ns is not None and timing_finished_ns is not None:
+        end_to_end_wall_total_ms = (timing_finished_ns - timing_started_ns) / 1_000_000.0
 
     summary = {
         "branch": artifact.branch,
@@ -108,6 +149,8 @@ def run_efficiency_for_artifact(
         "artifact_path": to_repo_relative(artifact.model_path),
         "summary_path": to_repo_relative(artifact.summary_path),
         "dataset_scope": args.dataset_scope,
+        "timing_start_stage": timing_start_stage,
+        "timing_excludes": ["preload", "validation", "warmup"],
         "warmup_steps": args.warmup_steps,
         "warmup_scope": "global" if args.num_instances == 1 else "per_instance",
         "repeat": args.repeat,
@@ -121,6 +164,13 @@ def run_efficiency_for_artifact(
         "dispatch_policy": "serial" if args.num_instances == 1 else "modulo_round_robin",
         "ordering_policy": "serial" if args.num_instances == 1 else "strict_modulo_roundtrip",
         "time_mode": args.time_mode,
+        "dispatch_block_total_ms": dispatch_block_total_ms,
+        "collect_wait_total_ms": collect_wait_total_ms,
+        "h2d_stage_total_ms": h2d_stage_total_ms,
+        "h2d_memcpy_total_ms": h2d_memcpy_total_ms,
+        "execute_wait_total_ms": execute_wait_total_ms,
+        "d2h_memcpy_total_ms": d2h_memcpy_total_ms,
+        "output_decode_total_ms": output_decode_total_ms,
     }
     summary.update(
         filter_summary_by_time_mode(
@@ -132,7 +182,7 @@ def run_efficiency_for_artifact(
             args.time_mode,
         )
     )
-    write_json(artifact_dir / "summary.json", summary)
+    write_json(summary_file_path, summary)
     return summary
 
 
