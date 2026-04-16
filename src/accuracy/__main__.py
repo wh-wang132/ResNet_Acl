@@ -13,7 +13,6 @@ from src.common.metrics import (
     ConfusionMatrixAccumulator,
     argmax_predictions,
     cross_entropy_from_logits,
-    softmax_np,
 )
 from src.common.report import (
     create_run_directory,
@@ -71,8 +70,7 @@ def run_accuracy_for_artifact(
                 sample = input_adapter.adapt(preloaded.input_fp16)
                 outputs = runner.infer(sample)
                 logits = outputs[0]
-                probabilities = softmax_np(logits, axis=1)
-                predictions = argmax_predictions(probabilities, axis=1)
+                predictions = argmax_predictions(logits, axis=1)
                 labels = np.asarray([preloaded.record.label_idx], dtype=np.int64)
                 losses = cross_entropy_from_logits(logits.astype(np.float64, copy=False), labels)
                 confusion.update(predictions, labels)
@@ -87,8 +85,7 @@ def run_accuracy_for_artifact(
         )
         for result in executor.iter_ordered(preloaded_samples):
             logits = result.outputs[0]
-            probabilities = softmax_np(logits, axis=1)
-            predictions = argmax_predictions(probabilities, axis=1)
+            predictions = argmax_predictions(logits, axis=1)
             labels = np.asarray([result.preloaded.record.label_idx], dtype=np.int64)
             losses = cross_entropy_from_logits(logits.astype(np.float64, copy=False), labels)
             confusion.update(predictions, labels)
