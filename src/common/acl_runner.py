@@ -783,7 +783,7 @@ class ACLConcurrentOrderedExecutor:
                         if stop_event.is_set():
                             return
                         preloaded = next(warmup_cycle)
-                        sample = input_adapter.adapt(preloaded.input_fp16)
+                        sample = input_adapter.adapt(preloaded.input_tensor)
                         runner.infer(sample)
                 warmed_queue.put(_WorkerWarmed(worker_id=worker_id))
 
@@ -792,7 +792,7 @@ class ACLConcurrentOrderedExecutor:
                         task = input_queue.get(timeout=QUEUE_POLL_TIMEOUT_SECONDS)
                     except queue.Empty:
                         continue
-                    sample = input_adapter.adapt(task.preloaded.input_fp16)
+                    sample = input_adapter.adapt(task.preloaded.input_tensor)
                     outputs, pure_infer_ms, timing = runner.infer_with_breakdown(sample)
                     result = OrderedInferenceResult(
                         seq_id=task.seq_id,

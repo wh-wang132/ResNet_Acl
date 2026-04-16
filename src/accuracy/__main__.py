@@ -39,7 +39,8 @@ def main() -> None:
     if not records:
         raise AccuracyRunError("test 集为空，无法执行精度评测")
 
-    preloaded_samples = preload_npy_samples(records, artifact.input_spec)
+    preload_dtype = np.dtype(artifact.input_spec.dtype)
+    preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
 
     run_dir = create_run_directory(args.output_root, args.branch)
     run_accuracy_for_artifact(artifact, preloaded_samples, class_names, run_dir, args.device_id, args)
@@ -59,6 +60,7 @@ def run_accuracy_for_artifact(
     total_loss = 0.0
     total_samples = 0
     active_instances = 1
+    preload_dtype = np.dtype(artifact.input_spec.dtype)
 
     if args.num_instances == 1:
         with ACLModelRunner(artifact, device_id=device_id) as runner:
@@ -67,7 +69,7 @@ def run_accuracy_for_artifact(
             model_input_spec = runner.input_spec
             model_output_spec = runner.output_specs[0]
             for preloaded in preloaded_samples:
-                sample = input_adapter.adapt(preloaded.input_fp16)
+                sample = input_adapter.adapt(preloaded.input_tensor)
                 outputs = runner.infer(sample)
                 logits = outputs[0]
                 predictions = argmax_predictions(logits, axis=1)
@@ -104,6 +106,7 @@ def run_accuracy_for_artifact(
         "samples": total_samples,
         "accuracy": confusion.accuracy(),
         "avg_loss": float(total_loss / total_samples) if total_samples else 0.0,
+        "preload_dtype": str(preload_dtype),
         "input_name": model_input_spec.name,
         "input_shape": list(model_input_spec.shape),
         "input_dtype": str(model_input_spec.dtype),

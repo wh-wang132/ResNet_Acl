@@ -85,11 +85,6 @@ def parse_efficiency_args() -> argparse.Namespace:
     parser.add_argument("--warmup_steps", type=int, default=20)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument(
-        "--dataset_scope",
-        choices=["manifest_all", "data_all"],
-        default="manifest_all",
-    )
-    parser.add_argument(
         "--time_mode",
         choices=["pure", "end_to_end", "both"],
         default="both",

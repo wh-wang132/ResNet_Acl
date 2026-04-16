@@ -19,30 +19,22 @@ class DataError(RuntimeError):
 @dataclass(frozen=True)
 class PreloadedSample:
     record: SampleRecord
-    input_fp16: np.ndarray
+    input_tensor: np.ndarray
 
 
 class RuntimeInputAdapter:
     def __init__(self, input_spec: TensorSpec):
         self._shape = tuple(input_spec.shape)
         self._target_dtype = np.dtype(input_spec.dtype)
-        self._fp32_buffer = np.empty(self._shape, dtype=np.float32) if self._target_dtype == np.float32 else None
 
-    def adapt(self, input_fp16: np.ndarray) -> np.ndarray:
-        if tuple(input_fp16.shape) != self._shape:
-            raise DataError(f"预加载输入 shape 不匹配: expected={self._shape}, actual={tuple(input_fp16.shape)}")
-        if np.dtype(input_fp16.dtype) != np.float16:
-            raise DataError(f"预加载输入 dtype 必须为 float16，实际为 {input_fp16.dtype}")
-        if not input_fp16.flags.c_contiguous:
+    def adapt(self, input_tensor: np.ndarray) -> np.ndarray:
+        if tuple(input_tensor.shape) != self._shape:
+            raise DataError(f"预加载输入 shape 不匹配: expected={self._shape}, actual={tuple(input_tensor.shape)}")
+        if np.dtype(input_tensor.dtype) != self._target_dtype:
+            raise DataError(f"预加载输入 dtype 不匹配: expected={self._target_dtype}, actual={input_tensor.dtype}")
+        if not input_tensor.flags.c_contiguous:
             raise DataError("预加载输入数组必须是 C contiguous")
-
-        if self._target_dtype == np.float16:
-            return input_fp16
-        if self._target_dtype == np.float32:
-            assert self._fp32_buffer is not None
-            np.copyto(self._fp32_buffer, input_fp16)
-            return self._fp32_buffer
-        raise DataError(f"不支持的目标输入 dtype: {self._target_dtype}")
+        return input_tensor
 
 
 def _load_npy_array(file_path: str | Path) -> np.ndarray:
@@ -102,14 +94,14 @@ def preload_npy_samples(
     records: Iterable[SampleRecord],
     input_spec: TensorSpec,
     *,
-    preload_dtype: np.dtype = np.float16,
+    preload_dtype: np.dtype | None = None,
 ) -> list[PreloadedSample]:
-    target_dtype = np.dtype(preload_dtype)
+    target_dtype = np.dtype(input_spec.dtype if preload_dtype is None else preload_dtype)
     target_shape = tuple(input_spec.shape)
     return [
         PreloadedSample(
             record=record,
-            input_fp16=load_npy_sample(record.file_path, target_shape, target_dtype),
+            input_tensor=load_npy_sample(record.file_path, target_shape, target_dtype),
         )
         for record in records
     ]
@@ -137,14 +129,25 @@ def validate_preloaded_sample_shapes(
 
     summary_shape = tuple(summary_input_spec.shape)
     model_shape = tuple(model_input_spec.shape)
+    summary_dtype = np.dtype(summary_input_spec.dtype)
+    model_dtype = np.dtype(model_input_spec.dtype)
     sampled_indices = _select_validation_sample_indices(len(preloaded_samples), max_samples)
 
     for sample_index in sampled_indices:
         preloaded = preloaded_samples[sample_index]
-        sample_shape = tuple(preloaded.input_fp16.shape)
+        sample_shape = tuple(preloaded.input_tensor.shape)
+        sample_dtype = np.dtype(preloaded.input_tensor.dtype)
         if sample_shape != summary_shape or sample_shape != model_shape:
             raise DataError(
                 "推理前 shape 三方校验失败: "
                 f"path={preloaded.record.file_path}, sample_shape={sample_shape}, "
                 f"summary_shape={summary_shape}, om_shape={model_shape}"
             )
+        if sample_dtype != summary_dtype or sample_dtype != model_dtype:
+            raise DataError(
+                "推理前 dtype 三方校验失败: "
+                f"path={preloaded.record.file_path}, sample_dtype={sample_dtype}, "
+                f"summary_dtype={summary_dtype}, om_dtype={model_dtype}"
+            )
+        if not preloaded.input_tensor.flags.c_contiguous:
+            raise DataError(f"预加载输入数组必须是 C contiguous: path={preloaded.record.file_path}")
