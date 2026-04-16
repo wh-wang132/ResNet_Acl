@@ -78,12 +78,22 @@ def _check_ret(result: int, action: str, *, raise_on_error: bool = True) -> bool
 
 
 @dataclass(frozen=True)
+class InferenceTimingBreakdown:
+    h2d_stage_ms: float
+    h2d_memcpy_ms: float
+    execute_wait_ms: float
+    d2h_memcpy_ms: float
+    output_decode_ms: float
+
+
+@dataclass(frozen=True)
 class OrderedInferenceResult:
     seq_id: int
     sample_index: int
     preloaded: PreloadedSample
     outputs: tuple[np.ndarray, ...]
     pure_infer_ms: float
+    timing: InferenceTimingBreakdown
     dispatch_started_ns: int
     worker_id: int
 
@@ -218,10 +228,17 @@ class ACLModelRunner:
         self._opened = False
 
     def infer(self, input_array: np.ndarray) -> tuple[np.ndarray, ...]:
-        outputs, _ = self.infer_with_timing(input_array)
+        outputs, _, _ = self.infer_with_breakdown(input_array)
         return outputs
 
     def infer_with_timing(self, input_array: np.ndarray) -> tuple[tuple[np.ndarray, ...], float]:
+        outputs, infer_ms, _ = self.infer_with_breakdown(input_array)
+        return outputs, infer_ms
+
+    def infer_with_breakdown(
+        self,
+        input_array: np.ndarray,
+    ) -> tuple[tuple[np.ndarray, ...], float, InferenceTimingBreakdown]:
         self._ensure_opened()
         if self._use_async_stream:
             return self._infer_with_async_stream(input_array)
@@ -239,10 +256,13 @@ class ACLModelRunner:
             raise ACLRuntimeError("ACLModelRunner 尚未读取模型输出规格")
         return self._model_output_specs
 
-    def _infer_with_sync(self, input_array: np.ndarray) -> tuple[tuple[np.ndarray, ...], float]:
+    def _infer_with_sync(self, input_array: np.ndarray) -> tuple[tuple[np.ndarray, ...], float, InferenceTimingBreakdown]:
         _check_ret(acl.rt.set_context(self._context), "acl.rt.set_context")
         self._validate_input_array(input_array, self.input_spec)
+        h2d_stage_start = time.perf_counter()
         host_input = input_array.tobytes()
+        h2d_stage_ms = (time.perf_counter() - h2d_stage_start) * 1000.0
+        h2d_memcpy_start = time.perf_counter()
         _check_ret(
             acl.rt.memcpy(
                 self._input_device_ptrs[0],
@@ -253,13 +273,15 @@ class ACLModelRunner:
             ),
             "acl.rt.memcpy(host_to_device)",
         )
-        start = time.perf_counter()
+        h2d_memcpy_ms = (time.perf_counter() - h2d_memcpy_start) * 1000.0
+        execute_start = time.perf_counter()
         _check_ret(
             acl.mdl.execute(self._model_id, self._input_dataset, self._output_dataset),
             "acl.mdl.execute",
         )
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        elapsed_ms = (time.perf_counter() - execute_start) * 1000.0
         outputs: list[np.ndarray] = []
+        d2h_memcpy_start = time.perf_counter()
         for index, spec in enumerate(self.output_specs):
             _check_ret(
                 acl.rt.memcpy(
@@ -271,16 +293,34 @@ class ACLModelRunner:
                 ),
                 f"acl.rt.memcpy(device_to_host, output_index={index})",
             )
+        d2h_memcpy_ms = (time.perf_counter() - d2h_memcpy_start) * 1000.0
+        output_decode_start = time.perf_counter()
+        for index, spec in enumerate(self.output_specs):
             outputs.append(self._read_output_array(index, spec))
-        return tuple(outputs), elapsed_ms
+        output_decode_ms = (time.perf_counter() - output_decode_start) * 1000.0
+        return (
+            tuple(outputs),
+            elapsed_ms,
+            InferenceTimingBreakdown(
+                h2d_stage_ms=h2d_stage_ms,
+                h2d_memcpy_ms=h2d_memcpy_ms,
+                execute_wait_ms=elapsed_ms,
+                d2h_memcpy_ms=d2h_memcpy_ms,
+                output_decode_ms=output_decode_ms,
+            ),
+        )
 
-    def _infer_with_async_stream(self, input_array: np.ndarray) -> tuple[tuple[np.ndarray, ...], float]:
+    def _infer_with_async_stream(self, input_array: np.ndarray) -> tuple[tuple[np.ndarray, ...], float, InferenceTimingBreakdown]:
         if self._stream is None or self._input_host_ptr is None:
             raise ACLRuntimeError("异步推理模式缺少 stream 或 host staging buffer")
         _check_ret(acl.rt.set_context(self._context), "acl.rt.set_context")
         self._validate_input_array(input_array, self.input_spec)
 
-        ctypes.memmove(self._input_host_ptr, acl.util.numpy_to_ptr(input_array), self._input_sizes[0])
+        h2d_stage_start = time.perf_counter()
+        input_bytes = input_array.tobytes()
+        ctypes.memmove(self._input_host_ptr, acl.util.bytes_to_ptr(input_bytes), self._input_sizes[0])
+        h2d_stage_ms = (time.perf_counter() - h2d_stage_start) * 1000.0
+        h2d_memcpy_start = time.perf_counter()
         _check_ret(
             acl.rt.memcpy_async(
                 self._input_device_ptrs[0],
@@ -293,15 +333,17 @@ class ACLModelRunner:
             "acl.rt.memcpy_async(host_to_device)",
         )
         _check_ret(acl.rt.synchronize_stream(self._stream), "acl.rt.synchronize_stream(host_to_device)")
+        h2d_memcpy_ms = (time.perf_counter() - h2d_memcpy_start) * 1000.0
 
-        start = time.perf_counter()
+        execute_start = time.perf_counter()
         _check_ret(
             acl.mdl.execute_async(self._model_id, self._input_dataset, self._output_dataset, self._stream),
             "acl.mdl.execute_async",
         )
         _check_ret(acl.rt.synchronize_stream(self._stream), "acl.rt.synchronize_stream(execute_async)")
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        elapsed_ms = (time.perf_counter() - execute_start) * 1000.0
 
+        d2h_memcpy_start = time.perf_counter()
         for index in range(len(self.output_specs)):
             _check_ret(
                 acl.rt.memcpy_async(
@@ -315,9 +357,22 @@ class ACLModelRunner:
                 f"acl.rt.memcpy_async(device_to_host, output_index={index})",
             )
         _check_ret(acl.rt.synchronize_stream(self._stream), "acl.rt.synchronize_stream(device_to_host)")
+        d2h_memcpy_ms = (time.perf_counter() - d2h_memcpy_start) * 1000.0
 
+        output_decode_start = time.perf_counter()
         outputs = [self._read_output_array(index, spec) for index, spec in enumerate(self.output_specs)]
-        return tuple(outputs), elapsed_ms
+        output_decode_ms = (time.perf_counter() - output_decode_start) * 1000.0
+        return (
+            tuple(outputs),
+            elapsed_ms,
+            InferenceTimingBreakdown(
+                h2d_stage_ms=h2d_stage_ms,
+                h2d_memcpy_ms=h2d_memcpy_ms,
+                execute_wait_ms=elapsed_ms,
+                d2h_memcpy_ms=d2h_memcpy_ms,
+                output_decode_ms=output_decode_ms,
+            ),
+        )
 
     def _read_output_array(self, index: int, spec: TensorSpec) -> np.ndarray:
         output_bytes = acl.util.ptr_to_bytes(self._output_host_ptrs[index], self._output_sizes[index])
@@ -481,6 +536,8 @@ class ACLConcurrentOrderedExecutor:
         self._model_output_specs: tuple[TensorSpec, ...] = ()
         self._run_started_ns: int | None = None
         self._last_result_ready_ns: int | None = None
+        self._dispatch_block_total_ns = 0
+        self._collect_wait_total_ns = 0
 
     @property
     def active_instances(self) -> int:
@@ -510,6 +567,14 @@ class ACLConcurrentOrderedExecutor:
     def last_result_ready_ns(self) -> int | None:
         return self._last_result_ready_ns
 
+    @property
+    def dispatch_block_total_ms(self) -> float:
+        return self._dispatch_block_total_ns / 1_000_000.0
+
+    @property
+    def collect_wait_total_ms(self) -> float:
+        return self._collect_wait_total_ns / 1_000_000.0
+
     def iter_ordered(
         self,
         preloaded_samples: list[PreloadedSample],
@@ -530,6 +595,8 @@ class ACLConcurrentOrderedExecutor:
         self._model_output_specs = ()
         self._run_started_ns = None
         self._last_result_ready_ns = None
+        self._dispatch_block_total_ns = 0
+        self._collect_wait_total_ns = 0
 
         start_event = threading.Event()
         stop_event = threading.Event()
@@ -573,6 +640,7 @@ class ACLConcurrentOrderedExecutor:
                 worker_id = expected_index % self._active_instances
                 expected_slot = expected_index % self.seq_window
                 output_queue = workers[worker_id].output_queue
+                collect_wait_start_ns = time.perf_counter_ns()
                 while True:
                     try:
                         result = output_queue.get(timeout=QUEUE_POLL_TIMEOUT_SECONDS)
@@ -583,6 +651,7 @@ class ACLConcurrentOrderedExecutor:
                                 f"并发推理在 {failure.phase} 阶段失败，worker_id={failure.worker_id}: {failure.error}"
                             ) from failure.error
                         continue
+                    self._collect_wait_total_ns += time.perf_counter_ns() - collect_wait_start_ns
                     if result.seq_id != expected_slot:
                         raise ACLRuntimeError(
                             "并发推理顺序错误: "
@@ -724,13 +793,14 @@ class ACLConcurrentOrderedExecutor:
                     except queue.Empty:
                         continue
                     sample = input_adapter.adapt(task.preloaded.input_fp16)
-                    outputs, pure_infer_ms = runner.infer_with_timing(sample)
+                    outputs, pure_infer_ms, timing = runner.infer_with_breakdown(sample)
                     result = OrderedInferenceResult(
                         seq_id=task.seq_id,
                         sample_index=task.sample_index,
                         preloaded=task.preloaded,
                         outputs=outputs,
                         pure_infer_ms=pure_infer_ms,
+                        timing=timing,
                         dispatch_started_ns=task.dispatch_started_ns,
                         worker_id=worker_id,
                     )
@@ -767,11 +837,13 @@ class ACLConcurrentOrderedExecutor:
                         dispatch_started_ns=time.perf_counter_ns(),
                     )
                     input_queue = workers[dispatch_index % self._active_instances].input_queue
+                    dispatch_wait_start_ns = time.perf_counter_ns()
                     while not stop_event.is_set():
                         try:
                             input_queue.put(task, timeout=QUEUE_POLL_TIMEOUT_SECONDS)
                         except queue.Full:
                             continue
+                        self._dispatch_block_total_ns += time.perf_counter_ns() - dispatch_wait_start_ns
                         break
                     dispatch_index += 1
         except Exception as exc:
