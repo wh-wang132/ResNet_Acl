@@ -126,10 +126,13 @@ def run_efficiency_for_artifact(
         model_output_spec = executor.output_specs[0]
         dispatch_block_total_ms = executor.dispatch_block_total_ms
         collect_wait_total_ms = executor.collect_wait_total_ms
-        if executor.run_started_ns is not None and executor.last_result_ready_ns is not None:
+        if executor.first_execute_started_ns is not None and executor.last_execute_finished_ns is not None:
+            pure_infer_wall_total_ms = (
+                executor.last_execute_finished_ns - executor.first_execute_started_ns
+            ) / 1_000_000.0
+        if executor.run_started_ns is not None:
             timing_started_ns = executor.run_started_ns
             timing_finished_ns = time.perf_counter_ns()
-            pure_infer_wall_total_ms = (executor.last_result_ready_ns - executor.run_started_ns) / 1_000_000.0
             end_to_end_wall_total_ms = (timing_finished_ns - timing_started_ns) / 1_000_000.0
 
     if args.num_instances == 1 and timing_started_ns is not None and timing_finished_ns is not None:
@@ -144,6 +147,8 @@ def run_efficiency_for_artifact(
         "dataset_scope": "manifest_test",
         "timing_start_stage": timing_start_stage,
         "timing_excludes": ["preload", "validation", "warmup"],
+        "pure_infer_scope": "model_execute_only",
+        "end_to_end_scope": "dispatch_to_postprocess",
         "warmup_steps": args.warmup_steps,
         "warmup_scope": "global" if args.num_instances == 1 else "per_instance",
         "repeat": args.repeat,

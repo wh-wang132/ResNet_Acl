@@ -84,6 +84,8 @@ class InferenceTimingBreakdown:
     execute_wait_ms: float
     d2h_memcpy_ms: float
     output_decode_ms: float
+    execute_started_ns: int
+    execute_finished_ns: int
 
 
 @dataclass(frozen=True)
@@ -274,12 +276,13 @@ class ACLModelRunner:
             "acl.rt.memcpy(host_to_device)",
         )
         h2d_memcpy_ms = (time.perf_counter() - h2d_memcpy_start) * 1000.0
-        execute_start = time.perf_counter()
+        execute_started_ns = time.perf_counter_ns()
         _check_ret(
             acl.mdl.execute(self._model_id, self._input_dataset, self._output_dataset),
             "acl.mdl.execute",
         )
-        elapsed_ms = (time.perf_counter() - execute_start) * 1000.0
+        execute_finished_ns = time.perf_counter_ns()
+        elapsed_ms = (execute_finished_ns - execute_started_ns) / 1_000_000.0
         outputs: list[np.ndarray] = []
         d2h_memcpy_start = time.perf_counter()
         for index, spec in enumerate(self.output_specs):
@@ -307,6 +310,8 @@ class ACLModelRunner:
                 execute_wait_ms=elapsed_ms,
                 d2h_memcpy_ms=d2h_memcpy_ms,
                 output_decode_ms=output_decode_ms,
+                execute_started_ns=execute_started_ns,
+                execute_finished_ns=execute_finished_ns,
             ),
         )
 
@@ -335,13 +340,14 @@ class ACLModelRunner:
         _check_ret(acl.rt.synchronize_stream(self._stream), "acl.rt.synchronize_stream(host_to_device)")
         h2d_memcpy_ms = (time.perf_counter() - h2d_memcpy_start) * 1000.0
 
-        execute_start = time.perf_counter()
+        execute_started_ns = time.perf_counter_ns()
         _check_ret(
             acl.mdl.execute_async(self._model_id, self._input_dataset, self._output_dataset, self._stream),
             "acl.mdl.execute_async",
         )
         _check_ret(acl.rt.synchronize_stream(self._stream), "acl.rt.synchronize_stream(execute_async)")
-        elapsed_ms = (time.perf_counter() - execute_start) * 1000.0
+        execute_finished_ns = time.perf_counter_ns()
+        elapsed_ms = (execute_finished_ns - execute_started_ns) / 1_000_000.0
 
         d2h_memcpy_start = time.perf_counter()
         for index in range(len(self.output_specs)):
@@ -371,6 +377,8 @@ class ACLModelRunner:
                 execute_wait_ms=elapsed_ms,
                 d2h_memcpy_ms=d2h_memcpy_ms,
                 output_decode_ms=output_decode_ms,
+                execute_started_ns=execute_started_ns,
+                execute_finished_ns=execute_finished_ns,
             ),
         )
 
@@ -536,6 +544,8 @@ class ACLConcurrentOrderedExecutor:
         self._model_output_specs: tuple[TensorSpec, ...] = ()
         self._run_started_ns: int | None = None
         self._last_result_ready_ns: int | None = None
+        self._first_execute_started_ns: int | None = None
+        self._last_execute_finished_ns: int | None = None
         self._dispatch_block_total_ns = 0
         self._collect_wait_total_ns = 0
 
@@ -568,6 +578,14 @@ class ACLConcurrentOrderedExecutor:
         return self._last_result_ready_ns
 
     @property
+    def first_execute_started_ns(self) -> int | None:
+        return self._first_execute_started_ns
+
+    @property
+    def last_execute_finished_ns(self) -> int | None:
+        return self._last_execute_finished_ns
+
+    @property
     def dispatch_block_total_ms(self) -> float:
         return self._dispatch_block_total_ns / 1_000_000.0
 
@@ -595,6 +613,8 @@ class ACLConcurrentOrderedExecutor:
         self._model_output_specs = ()
         self._run_started_ns = None
         self._last_result_ready_ns = None
+        self._first_execute_started_ns = None
+        self._last_execute_finished_ns = None
         self._dispatch_block_total_ns = 0
         self._collect_wait_total_ns = 0
 
@@ -657,6 +677,20 @@ class ACLConcurrentOrderedExecutor:
                             "并发推理顺序错误: "
                             f"expected_slot={expected_slot}, actual_slot={result.seq_id}, "
                             f"worker_id={worker_id}, seq_window={self.seq_window}"
+                        )
+                    if self._first_execute_started_ns is None:
+                        self._first_execute_started_ns = result.timing.execute_started_ns
+                    else:
+                        self._first_execute_started_ns = min(
+                            self._first_execute_started_ns,
+                            result.timing.execute_started_ns,
+                        )
+                    if self._last_execute_finished_ns is None:
+                        self._last_execute_finished_ns = result.timing.execute_finished_ns
+                    else:
+                        self._last_execute_finished_ns = max(
+                            self._last_execute_finished_ns,
+                            result.timing.execute_finished_ns,
                         )
                     self._last_result_ready_ns = time.perf_counter_ns()
                     yield result
