@@ -41,6 +41,29 @@ ResNet_Acl/
 - Ascend CANN Toolkit `8.5.0`
 - Ascend 310B ops `8.5.0`
 
+仓库运行时环境变量放在 `.envrc` 中，当前会完成：
+
+- 设置 `REPO_ROOT`
+- `source .pixi/envs/default/Ascend/ascend-toolkit/set_env.sh`
+- 补充 `PYTHONPATH=${REPO_ROOT}/src`
+
+推荐使用 `direnv` 自动加载该环境：
+
+```bash
+sudo apt-get install direnv
+echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
+source ~/.bashrc
+direnv allow
+```
+
+如果不使用 `direnv`，则在执行任何推理或校验命令前手动加载：
+
+```bash
+source .envrc
+```
+
+下文所有命令默认都建立在 `.envrc` 已加载的前提下。
+
 安装后可先做静态校验，不依赖真实 ACL 推理运行：
 
 ```bash
