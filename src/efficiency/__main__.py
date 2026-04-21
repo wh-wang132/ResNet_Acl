@@ -6,11 +6,10 @@ from pathlib import Path
 
 import numpy as np
 
-from src.common.acl_runner import ACLConcurrentOrderedExecutor, ACLModelRunner
 from src.common.args import parse_efficiency_args
-from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
-from src.common.data import RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
-from src.common.manifest import build_test_records, load_manifest
+from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError, resolve_artifact
+from src.common.data import DataError, RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
+from src.common.manifest import ManifestError, build_test_records, load_manifest
 from src.common.metrics import LatencyMeter, argmax_predictions
 from src.common.report import create_run_directory, to_repo_relative, write_json
 
@@ -24,28 +23,31 @@ def build_summary_filename(num_instances: int, buffer_depth: int) -> str:
 
 
 def main() -> None:
-    args = parse_efficiency_args()
-    artifact = resolve_artifact(args.branch, args.artifact_path)
-    manifest = load_manifest(args.split_manifest)
-    records = build_test_records(manifest, args.data_dir)
-    if args.limit is not None:
-        records = records[: args.limit]
-    if not records:
-        raise EfficiencyRunError("评测数据为空，无法执行效率评测")
+    try:
+        args = parse_efficiency_args()
+        artifact = resolve_artifact(args.branch, args.artifact_path)
+        manifest = load_manifest(args.split_manifest)
+        records = build_test_records(manifest, args.data_dir)
+        if args.limit is not None:
+            records = records[: args.limit]
+        if not records:
+            raise EfficiencyRunError("评测数据为空，无法执行效率评测")
 
-    preload_dtype = np.dtype(artifact.input_spec.dtype)
-    preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
+        preload_dtype = np.dtype(artifact.input_spec.dtype)
+        preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
 
-    run_dir = create_run_directory(args.output_root, args.branch)
-    run_efficiency_for_artifact(artifact, preloaded_samples, run_dir, args)
-    print(
-        to_repo_relative(
-            run_dir
-            / artifact.model_name
-            / artifact.experiment_name
-            / build_summary_filename(args.num_instances, args.buffer_depth)
+        run_dir = create_run_directory(args.output_root, args.branch)
+        run_efficiency_for_artifact(artifact, preloaded_samples, run_dir, args)
+        print(
+            to_repo_relative(
+                run_dir
+                / artifact.model_name
+                / artifact.experiment_name
+                / build_summary_filename(args.num_instances, args.buffer_depth)
+            )
         )
-    )
+    except (EfficiencyRunError, ArtifactScanError, ManifestError, DataError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_efficiency_for_artifact(
@@ -54,6 +56,13 @@ def run_efficiency_for_artifact(
     run_dir: Path,
     args,
 ) -> dict[str, object]:
+    try:
+        from src.common.acl_runner import ACLConcurrentOrderedExecutor, ACLModelRunner
+    except ImportError as exc:
+        raise EfficiencyRunError(
+            "导入 ACL 运行时失败，请先确认 Ascend CANN/ACL 环境已正确安装并可被当前 Python 环境加载"
+        ) from exc
+
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
     summary_file_path = artifact_dir / build_summary_filename(args.num_instances, args.buffer_depth)
     meter = LatencyMeter()

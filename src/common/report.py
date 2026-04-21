@@ -5,13 +5,6 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-import matplotlib
-matplotlib.use("Agg")
-matplotlib.rcParams["font.family"] = ["Times New Roman"]
-matplotlib.rcParams["font.sans-serif"] = ["Times New Roman"]
-matplotlib.rcParams["axes.unicode_minus"] = False
-import matplotlib.cm as cm
-import matplotlib.pyplot as plt
 import numpy as np
 
 from .branch_specs import REPO_ROOT
@@ -86,6 +79,16 @@ def plot_confusion_matrix(
     matrix: np.ndarray,
     class_names: list[str],
 ) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    matplotlib.rcParams["font.family"] = ["Times New Roman"]
+    matplotlib.rcParams["font.sans-serif"] = ["Times New Roman"]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+
+    import matplotlib.cm as cm
+    import matplotlib.pyplot as plt
+
     resolved = Path(file_path)
     ensure_directory(resolved.parent)
     plt.figure(figsize=(20, 16))

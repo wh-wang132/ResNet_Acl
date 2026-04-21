@@ -4,11 +4,10 @@ from pathlib import Path
 
 import numpy as np
 
-from src.common.acl_runner import ACLConcurrentOrderedExecutor, ACLModelRunner
 from src.common.args import parse_accuracy_args
-from src.common.artifact_scanner import ArtifactRecord, resolve_artifact
-from src.common.data import RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
-from src.common.manifest import build_test_records, load_manifest
+from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError, resolve_artifact
+from src.common.data import DataError, RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
+from src.common.manifest import ManifestError, build_test_records, load_manifest
 from src.common.metrics import (
     ConfusionMatrixAccumulator,
     argmax_predictions,
@@ -29,22 +28,25 @@ class AccuracyRunError(RuntimeError):
 
 
 def main() -> None:
-    args = parse_accuracy_args()
-    artifact = resolve_artifact(args.branch, args.artifact_path)
-    manifest = load_manifest(args.split_manifest)
-    class_names = [str(name) for name in manifest["class_names"]]
-    records = build_test_records(manifest, args.data_dir)
-    if args.limit is not None:
-        records = records[: args.limit]
-    if not records:
-        raise AccuracyRunError("test 集为空，无法执行精度评测")
+    try:
+        args = parse_accuracy_args()
+        artifact = resolve_artifact(args.branch, args.artifact_path)
+        manifest = load_manifest(args.split_manifest)
+        class_names = [str(name) for name in manifest["class_names"]]
+        records = build_test_records(manifest, args.data_dir)
+        if args.limit is not None:
+            records = records[: args.limit]
+        if not records:
+            raise AccuracyRunError("test 集为空，无法执行精度评测")
 
-    preload_dtype = np.dtype(artifact.input_spec.dtype)
-    preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
+        preload_dtype = np.dtype(artifact.input_spec.dtype)
+        preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
 
-    run_dir = create_run_directory(args.output_root, args.branch)
-    run_accuracy_for_artifact(artifact, preloaded_samples, class_names, run_dir, args.device_id, args)
-    print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
+        run_dir = create_run_directory(args.output_root, args.branch)
+        run_accuracy_for_artifact(artifact, preloaded_samples, class_names, run_dir, args.device_id, args)
+        print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
+    except (AccuracyRunError, ArtifactScanError, ManifestError, DataError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_accuracy_for_artifact(
@@ -55,6 +57,13 @@ def run_accuracy_for_artifact(
     device_id: int,
     args,
 ) -> dict[str, object]:
+    try:
+        from src.common.acl_runner import ACLConcurrentOrderedExecutor, ACLModelRunner
+    except ImportError as exc:
+        raise AccuracyRunError(
+            "导入 ACL 运行时失败，请先确认 Ascend CANN/ACL 环境已正确安装并可被当前 Python 环境加载"
+        ) from exc
+
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
     confusion = ConfusionMatrixAccumulator(num_classes=len(class_names))
     total_loss = 0.0
