@@ -5,14 +5,15 @@ from pathlib import Path
 import numpy as np
 
 from src.common.args import parse_accuracy_args
-from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError, resolve_artifact
-from src.common.data import DataError, RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
-from src.common.manifest import ManifestError, build_test_records, load_manifest
+from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError
+from src.common.data import DataError
+from src.common.manifest import ManifestError
 from src.common.metrics import (
     ConfusionMatrixAccumulator,
     argmax_predictions,
     cross_entropy_from_logits,
 )
+from src.common.runtime_prep import bootstrap_serial_runner, prepare_artifact_test_run
 from src.common.report import (
     create_run_directory,
     plot_confusion_matrix,
@@ -30,21 +31,29 @@ class AccuracyRunError(RuntimeError):
 def main() -> None:
     try:
         args = parse_accuracy_args()
-        artifact = resolve_artifact(args.branch, args.artifact_path)
-        manifest = load_manifest(args.split_manifest)
-        class_names = [str(name) for name in manifest["class_names"]]
-        records = build_test_records(manifest, args.data_dir)
-        if args.limit is not None:
-            records = records[: args.limit]
-        if not records:
-            raise AccuracyRunError("test 集为空，无法执行精度评测")
-
-        preload_dtype = np.dtype(artifact.input_spec.dtype)
-        preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
-
+        prepared = prepare_artifact_test_run(
+            branch=args.branch,
+            artifact_path=args.artifact_path,
+            split_manifest=args.split_manifest,
+            data_dir=args.data_dir,
+            limit=args.limit,
+            empty_records_message="test 集为空，无法执行精度评测",
+            empty_records_error_factory=AccuracyRunError,
+        )
         run_dir = create_run_directory(args.output_root, args.branch)
-        run_accuracy_for_artifact(artifact, preloaded_samples, class_names, run_dir, args.device_id, args)
-        print(to_repo_relative(run_dir / artifact.model_name / artifact.experiment_name / "summary.json"))
+        run_accuracy_for_artifact(
+            prepared.artifact,
+            prepared.preloaded_samples,
+            prepared.class_names,
+            run_dir,
+            args.device_id,
+            args,
+        )
+        print(
+            to_repo_relative(
+                run_dir / prepared.artifact.model_name / prepared.artifact.experiment_name / "summary.json"
+            )
+        )
     except (AccuracyRunError, ArtifactScanError, ManifestError, DataError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -73,10 +82,10 @@ def run_accuracy_for_artifact(
 
     if args.num_instances == 1:
         with ACLModelRunner(artifact, device_id=device_id) as runner:
-            validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
-            input_adapter = RuntimeInputAdapter(runner.input_spec)
-            model_input_spec = runner.input_spec
-            model_output_spec = runner.output_specs[0]
+            runtime = bootstrap_serial_runner(artifact, preloaded_samples, runner)
+            input_adapter = runtime.input_adapter
+            model_input_spec = runtime.model_input_spec
+            model_output_spec = runtime.model_output_spec
             for preloaded in preloaded_samples:
                 sample = input_adapter.adapt(preloaded.input_tensor)
                 outputs = runner.infer(sample)

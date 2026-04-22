@@ -7,11 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from src.common.args import parse_efficiency_args
-from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError, resolve_artifact
-from src.common.data import DataError, RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
-from src.common.manifest import ManifestError, build_test_records, load_manifest
+from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError
+from src.common.data import DataError
+from src.common.manifest import ManifestError
 from src.common.metrics import LatencyMeter, argmax_predictions
 from src.common.model_complexity import ModelComplexityError, collect_model_complexity
+from src.common.runtime_prep import bootstrap_serial_runner, prepare_artifact_test_run
 from src.common.report import create_run_directory, to_repo_relative, write_json
 
 
@@ -26,24 +27,22 @@ def build_summary_filename(num_instances: int, buffer_depth: int) -> str:
 def main() -> None:
     try:
         args = parse_efficiency_args()
-        artifact = resolve_artifact(args.branch, args.artifact_path)
-        manifest = load_manifest(args.split_manifest)
-        records = build_test_records(manifest, args.data_dir)
-        if args.limit is not None:
-            records = records[: args.limit]
-        if not records:
-            raise EfficiencyRunError("评测数据为空，无法执行效率评测")
-
-        preload_dtype = np.dtype(artifact.input_spec.dtype)
-        preloaded_samples = preload_npy_samples(records, artifact.input_spec, preload_dtype=preload_dtype)
-
+        prepared = prepare_artifact_test_run(
+            branch=args.branch,
+            artifact_path=args.artifact_path,
+            split_manifest=args.split_manifest,
+            data_dir=args.data_dir,
+            limit=args.limit,
+            empty_records_message="评测数据为空，无法执行效率评测",
+            empty_records_error_factory=EfficiencyRunError,
+        )
         run_dir = create_run_directory(args.output_root, args.branch)
-        run_efficiency_for_artifact(artifact, preloaded_samples, run_dir, args)
+        run_efficiency_for_artifact(prepared.artifact, prepared.preloaded_samples, run_dir, args)
         print(
             to_repo_relative(
                 run_dir
-                / artifact.model_name
-                / artifact.experiment_name
+                / prepared.artifact.model_name
+                / prepared.artifact.experiment_name
                 / build_summary_filename(args.num_instances, args.buffer_depth)
             )
         )
@@ -89,10 +88,10 @@ def run_efficiency_for_artifact(
 
     if args.num_instances == 1:
         with ACLModelRunner(artifact, device_id=args.device_id) as runner:
-            validate_preloaded_sample_shapes(preloaded_samples, artifact.input_spec, runner.input_spec)
-            input_adapter = RuntimeInputAdapter(runner.input_spec)
-            model_input_spec = runner.input_spec
-            model_output_spec = runner.output_specs[0]
+            runtime = bootstrap_serial_runner(artifact, preloaded_samples, runner)
+            input_adapter = runtime.input_adapter
+            model_input_spec = runtime.model_input_spec
+            model_output_spec = runtime.model_output_spec
             if args.warmup_steps > 0:
                 warmup_cycle = itertools.cycle(preloaded_samples)
                 for _ in range(args.warmup_steps):
