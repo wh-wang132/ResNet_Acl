@@ -15,13 +15,18 @@ from src.common.validation import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="ResNet_Acl 仓库静态校验")
+    parser = argparse.ArgumentParser(description="ResNet_Acl 仓库预检（不触发真实 ACL 推理）")
     parser.add_argument("--branch", choices=sorted(BRANCH_SPECS), default=None)
     parser.add_argument("--artifact_path", type=Path, default=None, help="单个 artifact 目录或 OM 文件路径")
     parser.add_argument("--data_dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--split_manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--sample_limit", type=int, default=DEFAULT_SAMPLE_LIMIT, help="每个 shape/dtype 组合抽样校验的 test 样本数")
     parser.add_argument("--output_path", type=Path, default=None, help="可选，额外写出 JSON 校验报告")
+    parser.add_argument(
+        "--skip_complexity_precheck",
+        action="store_true",
+        help="跳过 efficiency 所需的 complexity 预检，仅执行纯数据/manifest/shape 契约检查",
+    )
     return parser.parse_args()
 
 
@@ -42,6 +47,7 @@ def main() -> None:
             data_dir=args.data_dir,
             split_manifest=args.split_manifest,
             sample_limit=args.sample_limit,
+            skip_complexity_precheck=args.skip_complexity_precheck,
         )
     except ValidationError as exc:
         raise SystemExit(str(exc)) from exc

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .artifact_scanner import resolve_artifacts
+from .artifact_scanner import ArtifactRecord, ArtifactScanError, resolve_artifacts
 from .branch_specs import BRANCH_SPECS, REPO_ROOT
 from .data import preload_npy_samples
 from .manifest import (
@@ -16,12 +16,13 @@ from .manifest import (
     resolve_repo_path,
     scan_data_records,
 )
+from .model_complexity import ModelComplexityError, collect_model_complexity
 
 DEFAULT_SAMPLE_LIMIT = 32
 
 
 class ValidationError(RuntimeError):
-    """仓库静态校验失败。"""
+    """仓库预检失败。"""
 
 
 def to_repo_relative(path_like: str | Path) -> str:
@@ -89,7 +90,40 @@ def _summarize_data_scan(manifest: dict[str, object], data_dir: Path) -> dict[st
     }
 
 
-def _build_branch_report(branch: str, selected_records) -> dict[str, object]:
+def _run_complexity_precheck(artifact: ArtifactRecord, *, skip_complexity_precheck: bool) -> None:
+    if skip_complexity_precheck:
+        return
+    try:
+        collect_model_complexity(artifact)
+    except (ArtifactScanError, ModelComplexityError) as exc:
+        raise ValidationError(
+            f"complexity 预检失败: artifact={to_repo_relative(artifact.model_path)}: {exc}"
+        ) from exc
+
+
+def _build_artifact_entry(
+    artifact: ArtifactRecord,
+    *,
+    checked_samples: int,
+    skip_complexity_precheck: bool,
+) -> dict[str, object]:
+    _run_complexity_precheck(artifact, skip_complexity_precheck=skip_complexity_precheck)
+    return {
+        "model_name": artifact.model_name,
+        "experiment_name": artifact.experiment_name,
+        "artifact_path": to_repo_relative(artifact.model_path),
+        "summary_path": to_repo_relative(artifact.summary_path),
+        "input_name": artifact.input_spec.name,
+        "input_shape": list(artifact.input_spec.shape),
+        "input_dtype": str(np.dtype(artifact.input_spec.dtype)),
+        "output_name": artifact.output_specs[0].name,
+        "output_shape": list(artifact.output_specs[0].shape),
+        "output_dtype": str(np.dtype(artifact.output_specs[0].dtype)),
+        "sample_checks": checked_samples,
+    }
+
+
+def _build_branch_report(branch: str, selected_records, *, skip_complexity_precheck: bool) -> dict[str, object]:
     artifacts = resolve_artifacts(branch)
     preload_cache: dict[tuple[tuple[int, ...], str], int] = {}
     artifact_entries: list[dict[str, object]] = []
@@ -107,19 +141,11 @@ def _build_branch_report(branch: str, selected_records) -> dict[str, object]:
             preload_cache[cache_key] = checked_samples
 
         artifact_entries.append(
-            {
-                "model_name": artifact.model_name,
-                "experiment_name": artifact.experiment_name,
-                "artifact_path": to_repo_relative(artifact.model_path),
-                "summary_path": to_repo_relative(artifact.summary_path),
-                "input_name": artifact.input_spec.name,
-                "input_shape": list(artifact.input_spec.shape),
-                "input_dtype": str(np.dtype(artifact.input_spec.dtype)),
-                "output_name": artifact.output_specs[0].name,
-                "output_shape": list(artifact.output_specs[0].shape),
-                "output_dtype": str(np.dtype(artifact.output_specs[0].dtype)),
-                "sample_checks": checked_samples,
-            }
+            _build_artifact_entry(
+                artifact,
+                checked_samples=checked_samples,
+                skip_complexity_precheck=skip_complexity_precheck,
+            )
         )
 
     unique_input_shapes = sorted({tuple(entry["input_shape"]) for entry in artifact_entries})
@@ -139,7 +165,13 @@ def _build_branch_report(branch: str, selected_records) -> dict[str, object]:
     }
 
 
-def _build_single_artifact_report(branch: str, artifact_path: Path, selected_records) -> dict[str, object]:
+def _build_single_artifact_report(
+    branch: str,
+    artifact_path: Path,
+    selected_records,
+    *,
+    skip_complexity_precheck: bool,
+) -> dict[str, object]:
     artifact = resolve_artifacts(branch, artifact_path=artifact_path)[0]
     checked_samples = len(
         preload_npy_samples(
@@ -157,19 +189,11 @@ def _build_single_artifact_report(branch: str, artifact_path: Path, selected_rec
         "input_dtypes": [str(np.dtype(artifact.input_spec.dtype))],
         "output_dtypes": [str(np.dtype(artifact.output_specs[0].dtype))],
         "artifacts": [
-            {
-                "model_name": artifact.model_name,
-                "experiment_name": artifact.experiment_name,
-                "artifact_path": to_repo_relative(artifact.model_path),
-                "summary_path": to_repo_relative(artifact.summary_path),
-                "input_name": artifact.input_spec.name,
-                "input_shape": list(artifact.input_spec.shape),
-                "input_dtype": str(np.dtype(artifact.input_spec.dtype)),
-                "output_name": artifact.output_specs[0].name,
-                "output_shape": list(artifact.output_specs[0].shape),
-                "output_dtype": str(np.dtype(artifact.output_specs[0].dtype)),
-                "sample_checks": checked_samples,
-            }
+            _build_artifact_entry(
+                artifact,
+                checked_samples=checked_samples,
+                skip_complexity_precheck=skip_complexity_precheck,
+            )
         ],
     }
 
@@ -181,6 +205,7 @@ def build_validation_report(
     data_dir: str | Path,
     split_manifest: str | Path,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+    skip_complexity_precheck: bool = False,
 ) -> dict[str, object]:
     sample_limit = _validate_sample_limit(sample_limit)
     resolved_data_dir = resolve_cli_path(data_dir)
@@ -203,16 +228,29 @@ def build_validation_report(
 
     if branch is None:
         branch_reports = [
-            _build_branch_report(branch_name, selected_records)
+            _build_branch_report(
+                branch_name,
+                selected_records,
+                skip_complexity_precheck=skip_complexity_precheck,
+            )
             for branch_name in sorted(BRANCH_SPECS)
         ]
     else:
         if branch not in BRANCH_SPECS:
             raise ValidationError(f"不支持的推理分支: {branch}")
         branch_reports = [
-            _build_single_artifact_report(branch, resolved_artifact_path, selected_records)
+            _build_single_artifact_report(
+                branch,
+                resolved_artifact_path,
+                selected_records,
+                skip_complexity_precheck=skip_complexity_precheck,
+            )
             if resolved_artifact_path is not None
-            else _build_branch_report(branch, selected_records)
+            else _build_branch_report(
+                branch,
+                selected_records,
+                skip_complexity_precheck=skip_complexity_precheck,
+            )
         ]
 
     return {

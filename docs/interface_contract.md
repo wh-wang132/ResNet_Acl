@@ -93,7 +93,8 @@ input/atc/<branch>/<model_name>/<experiment_name>/
 
 - 只支持 `batch_size=1`
 - 只支持单输入、单输出 OM
-- 静态校验阶段检查 summary、manifest、样本文件和样本 shape/dtype
+- `src.validate` 预检阶段检查 summary、manifest、样本文件和样本 shape/dtype，并默认校验 efficiency 所需的 complexity 前置条件
+- complexity 预检不触发真实 ACL 推理，但会调用 `atc --mode=1` 做离线 OM 解析，因此需要 `atc` 可用
 - 真实推理阶段再通过 ACL 读取 OM 的真实输入输出规格，并做三方一致性校验：
   `预加载样本`、`atc_summary`、`OM 实际规格`
 
@@ -145,4 +146,4 @@ output/efficiency/<branch>/<model_name>/<experiment_name>/
 2. `pixi run python -m src.accuracy --branch <branch> --artifact_path <artifact_dir> ...`
 3. `pixi run python -m src.efficiency --branch <branch> --artifact_path <artifact_dir> ...`
 
-如果第 1 步失败，优先修复目录布局、manifest 字段、摘要字段或样本 shape/dtype，而不是直接排查 ACL 运行时。
+如果第 1 步失败，优先修复目录布局、manifest 字段、摘要字段、complexity 前置条件或样本 shape/dtype，而不是直接排查 ACL 运行时。

@@ -7,9 +7,9 @@
 - `src.accuracy`：基于 ACL 的 OM 精度评测
 - `src.efficiency`：基于 ACL 的 OM 效率评测
 
-同时提供一个不触发真实 ACL 推理的静态自检入口：
+同时提供一个不触发真实 ACL 推理的仓库预检入口：
 
-- `src.validate`：校验数据集、split manifest、ATC 产物和样本 shape/dtype 契约
+- `src.validate`：校验数据集、split manifest、ATC 产物、样本 shape/dtype 契约，并预检 `src.efficiency` 所需的 complexity 前置条件
 
 ## 仓库结构
 
@@ -64,10 +64,16 @@ source .envrc
 
 下文所有命令默认都建立在 `.envrc` 已加载的前提下。
 
-安装后可先做静态校验，不依赖真实 ACL 推理运行：
+安装后可先做仓库预检，不触发真实 ACL 推理：
 
 ```bash
 pixi run python -m src.validate --sample_limit 8
+```
+
+默认 `src.validate` 也会预检 `src.efficiency` 所需的 complexity 条件，因此需要 `atc` 可用，并会调用 `atc --mode=1` 做离线 OM 解析。如果只想排查数据、manifest 和 shape/dtype 契约，可显式跳过：
+
+```bash
+pixi run python -m src.validate --sample_limit 8 --skip_complexity_precheck
 ```
 
 如果只想检查某个分支或单个 artifact：
