@@ -141,6 +141,15 @@ sh autorun/autorun_efficiency.sh --limit 128 --repeat 3
 
 - `summary__instances{N}_buffer{M}.json`
 
+其中 `summary__instances{N}_buffer{M}.json` 现在额外包含：
+
+- `parameter_count`：直接透传 `atc_summary.json` 中的参数量
+- `operation_count`：按单次前向的理论 `MACs` 统计
+- `operation_count_included_op_types`：当前被计入 `MACs` 的 OM op type
+- `operation_count_excluded_op_types`：当前显式忽略的 OM op type
+
+当前 `operation_count` 只统计卷积和矩阵乘家族算子，不把 `Add`、`Cast`、`TransData`、量化/反量化等部署辅助算子混入理论 `MACs`。
+
 ## 上下游契约
 
 训练端 `wh-wang132/ResNet` 需要稳定提供：

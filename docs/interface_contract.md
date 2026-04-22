@@ -126,6 +126,17 @@ output/efficiency/<branch>/<model_name>/<experiment_name>/
 
 - `summary__instances{num_instances}_buffer{buffer_depth}.json`
 
+关键字段补充：
+
+- `parameter_count`：从 `atc_summary.json -> source_architecture_signature.parameter_count` 透传
+- `operation_count`：当前输入 shape 下、单次前向的理论 `MACs`
+- `operation_count_unit`：固定为 `MACs`
+- `operation_count_scope`：固定为 `per_forward_pass`
+- `operation_count_included_op_types`：当前计入 `operation_count` 的 OM op type
+- `operation_count_excluded_op_types`：当前显式忽略的 OM op type
+
+当前 `operation_count` 只统计卷积与矩阵乘家族算子，不把 `Add`、`Cast`、`TransData`、量化/反量化、池化与逐元素激活算子混入理论 `MACs`。
+
 ## 5. 推荐校验顺序
 
 训练端或云端同步新产物后，建议按下面顺序检查：

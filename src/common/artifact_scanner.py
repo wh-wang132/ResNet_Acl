@@ -36,6 +36,27 @@ class ArtifactRecord:
     output_specs: tuple[TensorSpec, ...]
     summary: dict[str, Any]
 
+    @property
+    def source_architecture_signature(self) -> dict[str, Any]:
+        value = self.summary.get("source_architecture_signature")
+        if not isinstance(value, dict):
+            raise ArtifactScanError(
+                f"摘要缺少 source_architecture_signature: {self.summary_path}"
+            )
+        return value
+
+    @property
+    def parameter_count(self) -> int:
+        value = self.source_architecture_signature.get("parameter_count")
+        if value is None:
+            raise ArtifactScanError(f"摘要缺少 parameter_count: {self.summary_path}")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ArtifactScanError(
+                f"parameter_count 不是合法整数: {self.summary_path}"
+            ) from exc
+
 
 class ArtifactScanError(RuntimeError):
     """模型扫描或摘要校验失败。"""

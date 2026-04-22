@@ -11,6 +11,7 @@ from src.common.artifact_scanner import ArtifactRecord, ArtifactScanError, resol
 from src.common.data import DataError, RuntimeInputAdapter, preload_npy_samples, validate_preloaded_sample_shapes
 from src.common.manifest import ManifestError, build_test_records, load_manifest
 from src.common.metrics import LatencyMeter, argmax_predictions
+from src.common.model_complexity import ModelComplexityError, collect_model_complexity
 from src.common.report import create_run_directory, to_repo_relative, write_json
 
 
@@ -65,6 +66,10 @@ def run_efficiency_for_artifact(
 
     artifact_dir = run_dir / artifact.model_name / artifact.experiment_name
     summary_file_path = artifact_dir / build_summary_filename(args.num_instances, args.buffer_depth)
+    try:
+        complexity = collect_model_complexity(artifact)
+    except (ArtifactScanError, ModelComplexityError) as exc:
+        raise EfficiencyRunError(str(exc)) from exc
     meter = LatencyMeter()
     h2d_stage_total_ms = 0.0
     h2d_memcpy_total_ms = 0.0
@@ -153,6 +158,12 @@ def run_efficiency_for_artifact(
         "experiment_name": artifact.experiment_name,
         "artifact_path": to_repo_relative(artifact.model_path),
         "summary_path": to_repo_relative(artifact.summary_path),
+        "parameter_count": complexity.parameter_count,
+        "operation_count": complexity.operation_count,
+        "operation_count_unit": complexity.operation_count_unit,
+        "operation_count_scope": complexity.operation_count_scope,
+        "operation_count_included_op_types": list(complexity.operation_count_included_op_types),
+        "operation_count_excluded_op_types": list(complexity.operation_count_excluded_op_types),
         "dataset_scope": "manifest_test",
         "timing_start_stage": timing_start_stage,
         "timing_excludes": ["preload", "validation", "warmup"],
