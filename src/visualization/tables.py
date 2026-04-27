@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Iterable
 
-from src.common.report import to_repo_relative
-
-from .schema import MissingInput, VisualizationRecord
+from .schema import VisualizationRecord
 
 BRANCH_DISPLAY_NAMES = {
     "pruning_fp16": "FP16 pruning",
@@ -15,23 +12,6 @@ BRANCH_DISPLAY_NAMES = {
 
 def build_artifact_metrics(records: Iterable[VisualizationRecord]) -> list[dict[str, object]]:
     return [_record_to_row(record) for record in sorted(records, key=_record_sort_key)]
-
-
-def build_missing_inputs(missing_inputs: Iterable[MissingInput]) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for item in sorted(missing_inputs, key=lambda value: value.key):
-        rows.append(
-            {
-                "branch": item.key.branch,
-                "model_name": item.key.model_name,
-                "experiment_name": item.key.experiment_name,
-                "missing_accuracy": item.missing_accuracy,
-                "missing_efficiency": item.missing_efficiency,
-                "accuracy_summary_path": _path_or_empty(item.accuracy_summary_path),
-                "efficiency_summary_path": _path_or_empty(item.efficiency_summary_path),
-            }
-        )
-    return rows
 
 
 def build_pareto_candidates(records: Iterable[VisualizationRecord]) -> list[dict[str, object]]:
@@ -45,6 +25,15 @@ def build_pareto_candidates(records: Iterable[VisualizationRecord]) -> list[dict
             row = _record_to_row(record)
             row["pareto_front"] = front_name
             rows.append(row)
+    return rows
+
+
+def build_paper_pareto_candidates(pareto_rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for row in pareto_rows:
+        paper_row = _paper_candidate_row(row)
+        paper_row["pareto_front"] = row.get("pareto_front", "")
+        rows.append(paper_row)
     return rows
 
 
@@ -82,23 +71,9 @@ def build_topk_candidates(
 def build_paper_top_candidates(topk_rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for row in topk_rows:
-        rows.append(
-            {
-                "rank": row.get("rank", ""),
-                "branch": row.get("branch", ""),
-                "branch_display": branch_display_name(row.get("branch")),
-                "model_name": row.get("model_name", ""),
-                "experiment_name": row.get("experiment_name", ""),
-                "ratio": row.get("ratio", ""),
-                "steps": row.get("steps", ""),
-                "accuracy": row.get("accuracy", ""),
-                "error_rate": row.get("error_rate", ""),
-                "end_to_end_throughput_samples_per_sec": row.get("end_to_end_throughput_samples_per_sec", ""),
-                "end_to_end_avg_latency_ms": row.get("end_to_end_avg_latency_ms", ""),
-                "operation_count_gmacs": row.get("operation_count_gmacs", ""),
-                "parameter_count": row.get("parameter_count", ""),
-            }
-        )
+        paper_row = _paper_candidate_row(row)
+        paper_row["rank"] = row.get("rank", "")
+        rows.append(paper_row)
     return rows
 
 
@@ -164,6 +139,23 @@ def branch_display_name(branch: object) -> str:
     return BRANCH_DISPLAY_NAMES.get(str(branch), str(branch))
 
 
+def _paper_candidate_row(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "branch": row.get("branch", ""),
+        "branch_display": branch_display_name(row.get("branch")),
+        "model_name": row.get("model_name", ""),
+        "experiment_name": row.get("experiment_name", ""),
+        "ratio": row.get("ratio", ""),
+        "steps": row.get("steps", ""),
+        "accuracy": row.get("accuracy", ""),
+        "error_rate": row.get("error_rate", ""),
+        "end_to_end_throughput_samples_per_sec": row.get("end_to_end_throughput_samples_per_sec", ""),
+        "end_to_end_avg_latency_ms": row.get("end_to_end_avg_latency_ms", ""),
+        "operation_count_gmacs": row.get("operation_count_gmacs", ""),
+        "parameter_count": row.get("parameter_count", ""),
+    }
+
+
 def _record_to_row(record: VisualizationRecord) -> dict[str, object]:
     accuracy = record.accuracy.payload
     efficiency = record.efficiency.payload
@@ -177,43 +169,14 @@ def _record_to_row(record: VisualizationRecord) -> dict[str, object]:
         "experiment_name": record.key.experiment_name,
         "ratio": _none_to_empty(record.experiment.ratio),
         "steps": _none_to_empty(record.experiment.steps),
-        "pruning_mode": _none_to_empty(record.experiment.pruning_mode),
-        "finetune_epochs": _none_to_empty(record.experiment.finetune_epochs),
-        "batch_size": _none_to_empty(record.experiment.batch_size),
-        "samples": _none_to_empty(accuracy.get("samples")),
         "accuracy": _none_to_empty(accuracy.get("accuracy")),
         "error_rate": _none_to_empty(error_rate),
-        "error_rate_percent": _none_to_empty(error_rate * 100.0 if error_rate is not None else None),
-        "avg_loss": _none_to_empty(accuracy.get("avg_loss")),
         "parameter_count": _none_to_empty(parameter_count),
-        "operation_count": _none_to_empty(operation_count),
         "operation_count_gmacs": _none_to_empty(operation_count / 1_000_000_000 if operation_count is not None else None),
-        "om_size_bytes": _none_to_empty(record.om_size_bytes),
-        "om_size_mib": _none_to_empty(record.om_size_bytes / 1024 / 1024 if record.om_size_bytes is not None else None),
-        "num_instances": _none_to_empty(efficiency.get("num_instances")),
-        "active_instances": _none_to_empty(efficiency.get("active_instances")),
-        "buffer_depth": _none_to_empty(efficiency.get("buffer_depth")),
         "end_to_end_avg_latency_ms": _none_to_empty(efficiency.get("end_to_end_avg_latency_ms")),
-        "end_to_end_p50_latency_ms": _none_to_empty(efficiency.get("end_to_end_p50_latency_ms")),
-        "end_to_end_p95_latency_ms": _none_to_empty(efficiency.get("end_to_end_p95_latency_ms")),
-        "end_to_end_p99_latency_ms": _none_to_empty(efficiency.get("end_to_end_p99_latency_ms")),
         "end_to_end_throughput_samples_per_sec": _none_to_empty(
             efficiency.get("end_to_end_throughput_samples_per_sec")
         ),
-        "pure_infer_avg_latency_ms": _none_to_empty(efficiency.get("pure_infer_avg_latency_ms")),
-        "pure_infer_throughput_samples_per_sec": _none_to_empty(
-            efficiency.get("pure_infer_throughput_samples_per_sec")
-        ),
-        "h2d_memcpy_total_ms": _none_to_empty(efficiency.get("h2d_memcpy_total_ms")),
-        "execute_wait_total_ms": _none_to_empty(efficiency.get("execute_wait_total_ms")),
-        "d2h_memcpy_total_ms": _none_to_empty(efficiency.get("d2h_memcpy_total_ms")),
-        "output_decode_total_ms": _none_to_empty(efficiency.get("output_decode_total_ms")),
-        "artifact_path": _none_to_empty(efficiency.get("artifact_path")),
-        "accuracy_summary_path": to_repo_relative(record.accuracy.summary_path),
-        "efficiency_summary_path": to_repo_relative(record.efficiency.summary_path),
-        "confusion_matrix_csv": _path_or_empty(record.accuracy.confusion_matrix_csv),
-        "confusion_matrix_png": _path_or_empty(record.accuracy.confusion_matrix_png),
-        "per_class_metrics_csv": _path_or_empty(record.accuracy.per_class_metrics_csv),
     }
 
 
@@ -290,10 +253,6 @@ def _float_metric(record: VisualizationRecord, key: str) -> float | None:
     if key in {"accuracy", "avg_loss"}:
         return _to_float(record.accuracy.payload.get(key))
     return _to_float(record.efficiency.payload.get(key))
-
-
-def _path_or_empty(path: Path | None) -> str:
-    return "" if path is None else to_repo_relative(path)
 
 
 def _none_to_empty(value: object) -> object:

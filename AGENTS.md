@@ -46,7 +46,7 @@
   ```
 - 离线可视化：
   ```bash
-  pixi run python -m src.visualization --plot_set all --num_instances 1 --buffer_depth 1
+  pixi run python -m src.visualization --strict
   ```
 - 批量脚本使用 `set -eu`，任一 artifact 失败会中止整体任务：
   ```bash
@@ -71,7 +71,7 @@
 - `src.accuracy` 只做精度评测编排，输出 `output/accuracy/<branch>/<model>/<experiment>/`。
 - `src.efficiency` 只做效率评测编排，输出 `output/efficiency/<branch>/<model>/<experiment>/`。
 - `src.validate` 是静态预检入口，不执行真实 ACL 推理；默认会做 efficiency 所需的 complexity 前置检查。
-- `src.visualization` 是纯离线结果消费层，只读取 accuracy/efficiency 已生成的 summary、CSV 和图片路径；不得导入 ACL、调用 ATC 或重新计算 OM complexity。
+- `src.visualization` 是纯离线论文插图生成层，只读取 accuracy/efficiency 已生成的 summary、CSV 和图片路径；不得导入 ACL、调用 ATC 或重新计算 OM complexity。
 - `autorun/*.sh` 只负责遍历 `<branch>/<model>/<experiment>` 两级 artifact 目录并调用 Python CLI。
 
 ## 接口契约
@@ -98,8 +98,9 @@
 - efficiency 输出目录：`output/efficiency/<branch>/<model_name>/<experiment_name>/`。
 - efficiency 关键文件：`summary__instances{num_instances}_buffer{buffer_depth}.json`。
 - efficiency summary 需要保留 `parameter_count`、`operation_count`、`operation_count_unit=MACs`、`operation_count_scope=per_forward_pass`、included/excluded op types、warmup/repeat、time mode、pure infer/end-to-end latency 与 throughput、H2D/execute/D2H/decode 分阶段耗时。
-- visualization 输出目录：`output/visualization/<run_name>/`。
-- visualization 关键文件：`index.json`、`summary.md`、`tables/artifact_metrics.csv`、`tables/missing_inputs.csv`、`tables/pareto_candidates.csv`、`tables/topk_candidates.csv`、`tables/branch_pairs.csv` 和 `plots/*`。
+- visualization 默认输出目录：`output/visualization/paper/`。
+- visualization 关键文件：`index.json`、`paper_summary.md`、`tables/paper_top5_candidates.csv`、`tables/paper_branch_pair_summary.csv`、`tables/paper_pareto_candidates.csv` 和 `plots/fig*.svg`。
+- visualization 仅服务论文插图表达，不保留探索型 `plot_set`、旧版通用 Markdown 报告或长期维护型汇总表契约。
 
 ## 异常处理规范
 
@@ -134,4 +135,4 @@
 - 修改 CLI 参数时，同步 `src/common/args.py`、对应 `src/*/__main__.py`、`README.md` 和 `docs/interface_contract.md`。
 - 修改 accuracy summary 字段时，同步 `src/accuracy/__main__.py`、`src/visualization/sources.py`、`src/visualization/tables.py`、`src/visualization/report.py` 和相关 plots。
 - 修改 efficiency summary 字段时，同步 `src/efficiency/__main__.py`、`src/common/metrics.py`、`src/common/model_complexity.py`、`src/visualization/sources.py`、`src/visualization/tables.py` 和 `src/visualization/report.py`。
-- 修改 visualization 表字段或 index 结构时，同步 `src/visualization/schema.py`、`src/visualization/sources.py`、`src/visualization/tables.py`、`src/visualization/report.py`、`src/visualization/plots.py` 和 `docs/interface_contract.md`。
+- 修改 visualization 论文图、paper 表字段或 index 结构时，同步 `src/visualization/schema.py`、`src/visualization/sources.py`、`src/visualization/tables.py`、`src/visualization/report.py`、`src/visualization/plots.py`、`README.md` 和 `docs/interface_contract.md`。

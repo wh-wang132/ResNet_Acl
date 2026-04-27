@@ -138,7 +138,7 @@ output/efficiency/<branch>/<model_name>/<experiment_name>/
 
 当前 `operation_count` 只统计卷积与矩阵乘家族算子，不把 `Add`、`Cast`、`TransData`、量化/反量化、池化与逐元素激活算子混入理论 `MACs`。
 
-### 4.3 可视化汇总
+### 4.3 论文插图输出
 
 输出目录：
 
@@ -146,20 +146,22 @@ output/efficiency/<branch>/<model_name>/<experiment_name>/
 output/visualization/<run_name>/
 ```
 
+默认 `run_name` 为 `paper`。该模块只消费 accuracy/efficiency 已生成的 summary、CSV 和图片路径，不导入 ACL、不调用 ATC、不重新计算 OM complexity。
+
 关键文件：
 
 - `index.json`
-- `summary.md`
-- `tables/artifact_metrics.csv`
-- `tables/pareto_candidates.csv`
-- `tables/topk_candidates.csv`
-- `tables/branch_pairs.csv`
-- `tables/missing_inputs.csv`
-- `plots/error_rate_throughput_pareto.png`
-- `plots/error_rate_latency_pareto.png`
-- `plots/*.png` 或 `plots/*.svg`
+- `paper_summary.md`
+- `tables/paper_top5_candidates.csv`
+- `tables/paper_branch_pair_summary.csv`
+- `tables/paper_pareto_candidates.csv`
+- `plots/fig1_pareto_error_throughput.svg`
+- `plots/fig2_pareto_error_latency.svg`
+- `plots/fig3_fp16_int8_pair_summary.svg`
+- `plots/fig4_complexity_tradeoff.svg`
+- 可选 `plots/fig5_per_class_recall_delta.svg`
 
-`tables/artifact_metrics.csv` 同时保留 `accuracy` 和派生字段 `error_rate = 1 - accuracy`、`error_rate_percent`。涉及精度对比的主图使用对数错误率轴，涉及 `operation_count_gmacs` 和 `parameter_count` 的主图使用对数复杂度轴，涉及 latency 的主图使用对数延迟轴。`src.visualization` 是纯离线结果消费层，只读取 accuracy/efficiency 已生成的 summary、CSV 和图片路径，不导入 ACL、不调用 ATC、不重新计算 OM complexity。
+`paper_top5_candidates.csv` 记录满足 accuracy floor 后按吞吐排序的候选；`paper_branch_pair_summary.csv` 汇总同一 model/experiment 下 FP16 pruning 与 INT8 AMCT 的成对差异；`paper_pareto_candidates.csv` 记录 fig1/fig2 使用的 Pareto 候选。涉及精度对比的主图使用 `error_rate = 1 - accuracy` 和对数错误率轴，涉及 `operation_count_gmacs`、`parameter_count` 与 latency 的主图使用对数坐标轴。当前论文插图以客观呈现本次测量结果为目标，不隐藏 INT8 AMCT 在该环境下吞吐更低、延迟更高的情况。
 
 ## 5. 推荐校验顺序
 

@@ -12,12 +12,11 @@ print_section() {
 
 cd "$ROOT_DIR"
 
-print_section "开始生成可视化汇总"
+print_section "开始生成论文插图"
 
 pixi run python -m src.visualization \
-    --plot_set all \
     --num_instances 1 \
     --buffer_depth 1 \
     "$@"
 
-print_section "完成生成可视化汇总"
+print_section "完成生成论文插图"

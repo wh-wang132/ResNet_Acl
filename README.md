@@ -25,7 +25,8 @@ ResNet_Acl/
 │       └── dataset_split__train0.60_val0.20_test0.20_seed42.json
 ├── output/
 │   ├── accuracy/                 # 精度评测输出
-│   └── efficiency/               # 效率评测输出
+│   ├── efficiency/               # 效率评测输出
+│   └── visualization/            # 论文插图输出
 ├── autorun/                      # 遍历全部 artifact 的批量脚本
 └── src/
     ├── accuracy/
@@ -128,13 +129,10 @@ sh autorun/autorun_efficiency.sh --limit 128 --repeat 3
 sh autorun/autorun_visualization.sh
 ```
 
-离线生成可视化汇总：
+离线生成论文插图：
 
 ```bash
-pixi run python -m src.visualization \
-  --plot_set all \
-  --num_instances 1 \
-  --buffer_depth 1
+pixi run python -m src.visualization --strict
 ```
 
 ## 当前硬约束
@@ -168,19 +166,20 @@ pixi run python -m src.visualization \
 
 当前 `operation_count` 只统计卷积和矩阵乘家族算子，不把 `Add`、`Cast`、`TransData`、量化/反量化等部署辅助算子混入理论 `MACs`。
 
-`src.visualization` 默认写到 `output/visualization/all/`，核心输出包括：
+`src.visualization` 默认写到 `output/visualization/paper/`，核心输出面向论文插图，包括：
 
 - `index.json`
-- `summary.md`
-- `tables/artifact_metrics.csv`
-- `tables/pareto_candidates.csv`
-- `tables/topk_candidates.csv`
-- `tables/branch_pairs.csv`
-- `plots/error_rate_throughput_pareto.png`
-- `plots/error_rate_latency_pareto.png`
-- `plots/*.png`
+- `paper_summary.md`
+- `tables/paper_top5_candidates.csv`
+- `tables/paper_branch_pair_summary.csv`
+- `tables/paper_pareto_candidates.csv`
+- `plots/fig1_pareto_error_throughput.svg`
+- `plots/fig2_pareto_error_latency.svg`
+- `plots/fig3_fp16_int8_pair_summary.svg`
+- `plots/fig4_complexity_tradeoff.svg`
+- 可选 `plots/fig5_per_class_recall_delta.svg`
 
-该模块只消费已有 `output/accuracy` 与 `output/efficiency`，不导入 ACL、不调用 ATC、不触发真实推理。由于大多数模型精度高于 `0.99`，涉及精度对比的主图使用 `error_rate = 1 - accuracy` 并采用对数坐标轴；涉及计算量、参数量和 latency 的主图也采用对数坐标轴。
+该模块只消费已有 `output/accuracy` 与 `output/efficiency`，不导入 ACL、不调用 ATC、不触发真实推理。论文图默认使用 SVG，可通过 `--format png --dpi 300` 生成位图版本。由于大多数模型精度高于 `0.99`，涉及精度对比的主图使用 `error_rate = 1 - accuracy` 并采用对数坐标轴；涉及计算量、参数量和 latency 的主图也采用对数坐标轴。当前图表会客观呈现本次测量中 FP16 pruning 与 INT8 AMCT 的精度、吞吐和延迟差异。
 
 ## 上下游契约
 
