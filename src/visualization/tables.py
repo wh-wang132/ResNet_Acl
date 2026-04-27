@@ -7,6 +7,11 @@ from src.common.report import to_repo_relative
 
 from .schema import MissingInput, VisualizationRecord
 
+BRANCH_DISPLAY_NAMES = {
+    "pruning_fp16": "FP16 pruning",
+    "amct_deploy": "INT8 AMCT",
+}
+
 
 def build_artifact_metrics(records: Iterable[VisualizationRecord]) -> list[dict[str, object]]:
     return [_record_to_row(record) for record in sorted(records, key=_record_sort_key)]
@@ -74,6 +79,29 @@ def build_topk_candidates(
     return rows
 
 
+def build_paper_top_candidates(topk_rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for row in topk_rows:
+        rows.append(
+            {
+                "rank": row.get("rank", ""),
+                "branch": row.get("branch", ""),
+                "branch_display": branch_display_name(row.get("branch")),
+                "model_name": row.get("model_name", ""),
+                "experiment_name": row.get("experiment_name", ""),
+                "ratio": row.get("ratio", ""),
+                "steps": row.get("steps", ""),
+                "accuracy": row.get("accuracy", ""),
+                "error_rate": row.get("error_rate", ""),
+                "end_to_end_throughput_samples_per_sec": row.get("end_to_end_throughput_samples_per_sec", ""),
+                "end_to_end_avg_latency_ms": row.get("end_to_end_avg_latency_ms", ""),
+                "operation_count_gmacs": row.get("operation_count_gmacs", ""),
+                "parameter_count": row.get("parameter_count", ""),
+            }
+        )
+    return rows
+
+
 def build_branch_pairs(records: Iterable[VisualizationRecord]) -> list[dict[str, object]]:
     grouped: dict[tuple[str, str], dict[str, VisualizationRecord]] = {}
     for record in records:
@@ -116,6 +144,24 @@ def build_branch_pairs(records: Iterable[VisualizationRecord]) -> list[dict[str,
             }
         )
     return rows
+
+
+def build_paper_branch_pair_summary(branch_pair_rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    rows = list(branch_pair_rows)
+    grouped: dict[str, list[dict[str, object]]] = {"overall": rows}
+    for row in rows:
+        grouped.setdefault(str(row.get("model_name", "")), []).append(row)
+
+    summary_rows: list[dict[str, object]] = []
+    for group_name, group_rows in grouped.items():
+        if not group_rows:
+            continue
+        summary_rows.append(_build_pair_summary_row(group_name, group_rows))
+    return summary_rows
+
+
+def branch_display_name(branch: object) -> str:
+    return BRANCH_DISPLAY_NAMES.get(str(branch), str(branch))
 
 
 def _record_to_row(record: VisualizationRecord) -> dict[str, object]:
@@ -282,3 +328,61 @@ def _ratio(left: float | None, right: float | None) -> float | str:
     if left is None or right in (None, 0.0):
         return ""
     return left / right
+
+
+def _build_pair_summary_row(group_name: str, rows: list[dict[str, object]]) -> dict[str, object]:
+    accuracy_delta_pp = [
+        value * 100.0
+        for value in _numeric_values(row.get("accuracy_delta_amct_minus_pruning") for row in rows)
+    ]
+    throughput_ratio = _numeric_values(row.get("throughput_ratio_amct_over_pruning") for row in rows)
+    latency_ratio = _numeric_values(row.get("latency_ratio_amct_over_pruning") for row in rows)
+    fp16_throughput = _numeric_values(row.get("pruning_throughput") for row in rows)
+    int8_throughput = _numeric_values(row.get("amct_throughput") for row in rows)
+    fp16_latency = _numeric_values(row.get("pruning_latency") for row in rows)
+    int8_latency = _numeric_values(row.get("amct_latency") for row in rows)
+    return {
+        "group": "overall" if group_name == "overall" else "model",
+        "model_name": "" if group_name == "overall" else group_name,
+        "pairs": len(rows),
+        "accuracy_delta_pp_median": _median_or_empty(accuracy_delta_pp),
+        "accuracy_delta_pp_min": _min_or_empty(accuracy_delta_pp),
+        "accuracy_delta_pp_max": _max_or_empty(accuracy_delta_pp),
+        "throughput_ratio_median": _median_or_empty(throughput_ratio),
+        "throughput_ratio_min": _min_or_empty(throughput_ratio),
+        "throughput_ratio_max": _max_or_empty(throughput_ratio),
+        "latency_ratio_median": _median_or_empty(latency_ratio),
+        "latency_ratio_min": _min_or_empty(latency_ratio),
+        "latency_ratio_max": _max_or_empty(latency_ratio),
+        "fp16_throughput_median": _median_or_empty(fp16_throughput),
+        "int8_throughput_median": _median_or_empty(int8_throughput),
+        "fp16_latency_median": _median_or_empty(fp16_latency),
+        "int8_latency_median": _median_or_empty(int8_latency),
+    }
+
+
+def _numeric_values(values: Iterable[object]) -> list[float]:
+    result: list[float] = []
+    for value in values:
+        converted = _to_float(value)
+        if converted is not None:
+            result.append(converted)
+    return result
+
+
+def _median_or_empty(values: list[float]) -> float | str:
+    if not values:
+        return ""
+    values = sorted(values)
+    midpoint = len(values) // 2
+    if len(values) % 2:
+        return values[midpoint]
+    return (values[midpoint - 1] + values[midpoint]) / 2.0
+
+
+def _min_or_empty(values: list[float]) -> float | str:
+    return min(values) if values else ""
+
+
+def _max_or_empty(values: list[float]) -> float | str:
+    return max(values) if values else ""
