@@ -6,6 +6,7 @@
 
 - `src.accuracy`：基于 ACL 的 OM 精度评测
 - `src.efficiency`：基于 ACL 的 OM 效率评测
+- `src.visualization`：离线聚合精度/效率产物并生成论文分析图表
 
 同时提供一个不触发真实 ACL 推理的仓库预检入口：
 
@@ -94,6 +95,7 @@ pixi run python -m src.validate \
 pixi run python -m src.accuracy --help
 pixi run python -m src.efficiency --help
 pixi run python -m src.validate --help
+pixi run python -m src.visualization --help
 ```
 
 精度评测示例：
@@ -123,6 +125,16 @@ pixi run python -m src.efficiency \
 ```bash
 sh autorun/autorun_accuracy.sh --limit 128
 sh autorun/autorun_efficiency.sh --limit 128 --repeat 3
+sh autorun/autorun_visualization.sh
+```
+
+离线生成可视化汇总：
+
+```bash
+pixi run python -m src.visualization \
+  --plot_set all \
+  --num_instances 1 \
+  --buffer_depth 1
 ```
 
 ## 当前硬约束
@@ -155,6 +167,20 @@ sh autorun/autorun_efficiency.sh --limit 128 --repeat 3
 - `operation_count_excluded_op_types`：当前显式忽略的 OM op type
 
 当前 `operation_count` 只统计卷积和矩阵乘家族算子，不把 `Add`、`Cast`、`TransData`、量化/反量化等部署辅助算子混入理论 `MACs`。
+
+`src.visualization` 默认写到 `output/visualization/all/`，核心输出包括：
+
+- `index.json`
+- `summary.md`
+- `tables/artifact_metrics.csv`
+- `tables/pareto_candidates.csv`
+- `tables/topk_candidates.csv`
+- `tables/branch_pairs.csv`
+- `plots/error_rate_throughput_pareto.png`
+- `plots/error_rate_latency_pareto.png`
+- `plots/*.png`
+
+该模块只消费已有 `output/accuracy` 与 `output/efficiency`，不导入 ACL、不调用 ATC、不触发真实推理。由于大多数模型精度高于 `0.99`，涉及精度对比的主图使用 `error_rate = 1 - accuracy` 并采用对数坐标轴；涉及计算量、参数量和 latency 的主图也采用对数坐标轴。
 
 ## 上下游契约
 

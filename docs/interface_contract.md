@@ -138,6 +138,29 @@ output/efficiency/<branch>/<model_name>/<experiment_name>/
 
 当前 `operation_count` 只统计卷积与矩阵乘家族算子，不把 `Add`、`Cast`、`TransData`、量化/反量化、池化与逐元素激活算子混入理论 `MACs`。
 
+### 4.3 可视化汇总
+
+输出目录：
+
+```text
+output/visualization/<run_name>/
+```
+
+关键文件：
+
+- `index.json`
+- `summary.md`
+- `tables/artifact_metrics.csv`
+- `tables/pareto_candidates.csv`
+- `tables/topk_candidates.csv`
+- `tables/branch_pairs.csv`
+- `tables/missing_inputs.csv`
+- `plots/error_rate_throughput_pareto.png`
+- `plots/error_rate_latency_pareto.png`
+- `plots/*.png` 或 `plots/*.svg`
+
+`tables/artifact_metrics.csv` 同时保留 `accuracy` 和派生字段 `error_rate = 1 - accuracy`、`error_rate_percent`。涉及精度对比的主图使用对数错误率轴，涉及 `operation_count_gmacs` 和 `parameter_count` 的主图使用对数复杂度轴，涉及 latency 的主图使用对数延迟轴。`src.visualization` 是纯离线结果消费层，只读取 accuracy/efficiency 已生成的 summary、CSV 和图片路径，不导入 ACL、不调用 ATC、不重新计算 OM complexity。
+
 ## 5. 推荐校验顺序
 
 训练端或云端同步新产物后，建议按下面顺序检查：
